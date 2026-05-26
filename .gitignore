@@ -1,0 +1,14 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local environment variables
+.env
+
+# Database and local document store
+db/
+docs/
+
+# Evaluation results
+rag_performance_metrics.csv
