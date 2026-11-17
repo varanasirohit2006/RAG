@@ -1,0 +1,27 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - documents:/app/docs
+      - indexes:/app/db
+      - extraction_cache:/app/.cache
+      - evaluation_results:/app/evaluation_runs
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 4g
+    cpus: 4.0
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  documents:
+  indexes:
+  extraction_cache:
+  evaluation_results:

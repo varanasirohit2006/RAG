@@ -1,0 +1,4 @@
+# Optional Unstructured layout/table pipeline; also needs Poppler and Tesseract.
+-r requirements-ocr.txt
+unstructured[pdf]>=0.18,<0.23
+pytesseract>=0.3.13,<0.4

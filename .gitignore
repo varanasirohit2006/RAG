@@ -5,6 +5,22 @@ __pycache__/
 
 # Local environment variables
 .env
+.env.*
+!.env.example
+.venv/
+venv/
+.cache/
+.pytest_cache/
+test-results/
+evaluation_runs/
+evaluation_datasets/
+
+# Generated frontend dependencies and build/test output
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
 
 # Database and local document store
 db/

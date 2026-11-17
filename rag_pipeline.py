@@ -1,205 +1,232 @@
-"""
-Multimodal RAG Pipeline
-========================
-This module contains the complete pipeline for:
-1. Document partitioning (PDF extraction)
-2. Chunking by title
-3. Content type separation (text, tables, images)
-4. AI-enhanced summarization
-5. Vector store creation (ChromaDB)
-6. RAG query and answer generation
-"""
+"""Reusable document ingestion, grounded generation, and retrieval services."""
+
+from __future__ import annotations
 
 import json
 import os
-from typing import List
-import unstructured_pytesseract
-from unstructured.partition.pdf import partition_pdf
-from unstructured.chunking.title import chunk_by_title
-from langchain_core.documents import Document
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
-from langchain_core.messages import HumanMessage
+from functools import lru_cache
+from pathlib import Path
+
 from dotenv import load_dotenv
+from langchain_core.documents import Document
+from unstructured.chunking.title import chunk_by_title
+
+from document_extraction import ExtractionSettings, extract_document
+from generation_runtime import (
+    GenerationError,
+    generate_final_answer,
+    get_generation_model,
+    prepare_generation_context,
+)
+from index_runtime import (
+    PIPELINE_VERSION,
+    build_vector_store,
+    elements_fingerprint,
+    embedding_name,
+    embedding_revision,
+    index_is_ready,
+    index_lock,
+    open_vector_store,
+    read_index_manifest,
+)
+from retrieval_runtime import get_retrievers, get_reranker, retrieve_documents
 
 load_dotenv()
 
-# Configure Tesseract
-unstructured_pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-def partition_document(file_path: str):
-    """Extract elements from PDF using unstructured"""
-    print(f"Partitioning document: {file_path}")
-    elements = partition_pdf(
-        filename=file_path,
-        strategy="hi_res",
-        infer_table_structure=True,
-        extract_image_block_types=["Image"],
-        extract_image_block_to_payload=True
+@lru_cache(maxsize=1)
+def get_embedding_model():
+    from langchain_huggingface import HuggingFaceEmbeddings
+
+    batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+    if not 1 <= batch_size <= 512:
+        raise ValueError("EMBEDDING_BATCH_SIZE must be between 1 and 512.")
+    model_kwargs = {"device": os.getenv("EMBEDDING_DEVICE", "cpu")}
+    local_path = _local_embedding_snapshot()
+    if local_path:
+        model_kwargs["local_files_only"] = True
+    elif embedding_revision():
+        model_kwargs["revision"] = embedding_revision()
+    return HuggingFaceEmbeddings(
+        model_name=str(local_path) if local_path else embedding_name(),
+        cache_folder=str(_embedding_cache_directory()),
+        model_kwargs=model_kwargs,
+        encode_kwargs={"batch_size": batch_size, "normalize_embeddings": True},
     )
-    print(f"Extracted {len(elements)} elements")
-    return elements
+
+
+def _embedding_cache_directory():
+    if os.getenv("HF_HUB_CACHE"):
+        return Path(os.getenv("HF_HUB_CACHE"))
+    if os.getenv("HF_HOME"):
+        return Path(os.getenv("HF_HOME")) / "hub"
+    return Path(__file__).resolve().parent / ".cache" / "huggingface" / "hub"
+
+
+def _local_embedding_snapshot():
+    configured = os.getenv("EMBEDDING_MODEL_PATH")
+    if configured:
+        path = Path(configured)
+        if not (path / "modules.json").is_file():
+            raise ValueError("EMBEDDING_MODEL_PATH must point to a downloaded SentenceTransformer model.")
+        return path
+    revision = embedding_revision()
+    candidates = [_embedding_cache_directory(), Path.home() / ".cache" / "huggingface" / "hub"]
+    model_folder = "models--" + embedding_name().replace("/", "--")
+    for cache in candidates:
+        root = cache / model_folder
+        if revision:
+            snapshots = [root / "snapshots" / revision]
+        else:
+            try:
+                current = (root / "refs" / "main").read_text(encoding="utf-8").strip()
+                snapshots = [root / "snapshots" / current]
+            except OSError:
+                try:
+                    snapshots = list((root / "snapshots").iterdir())
+                except OSError:
+                    snapshots = []
+        for path in snapshots:
+            if (path / "modules.json").is_file() and (path / "config.json").is_file() and any(
+                (path / weight).is_file() for weight in ("model.safetensors", "pytorch_model.bin")
+            ):
+                return path
+    return None
+
+
+def partition_document(file_path: str, *, extraction_mode=None, ocr_backend=None):
+    return extract_document(
+        file_path,
+        settings=ExtractionSettings.from_env(mode=extraction_mode, ocr_backend=ocr_backend),
+    )
+
 
 def create_chunks_by_title(elements):
-    """Create semantically meaningful chunks"""
-    print("Creating chunks by title...")
-    chunks = chunk_by_title(
-        elements=elements,
-        combine_text_under_n_chars=200,
-        max_characters=2000,
-        new_after_n_chars=1500,
+    return chunk_by_title(
+        elements=elements, combine_text_under_n_chars=200,
+        max_characters=2000, new_after_n_chars=1500,
     )
-    print(f"Created {len(chunks)} chunks")
-    return chunks
+
 
 def separate_content_types(chunk):
-    """Break a chunk into its component types (text, tables, images)"""
-    if hasattr(chunk, 'metadata') and hasattr(chunk.metadata, 'orig_elements'):
-        elements = chunk.metadata.orig_elements
-    else:
-        elements = [chunk]
-    
-    text_parts, tables, images, element_types = [], [], [], set()
-    
+    """Preserve original text/table/image evidence rather than generated substitutes."""
+    originals = getattr(getattr(chunk, "metadata", None), "orig_elements", None)
+    elements = originals or [chunk]
+    text_parts, tables, images, types = [], [], [], set()
     for element in elements:
-        element_dict = element.to_dict()
-        element_type = element_dict["type"]
-        element_types.add(element_type)
-        
-        if element_type == "Table":
-            html = element_dict["metadata"].get("text_as_html", "")
-            if html: tables.append(html)
-            text_parts.append(element_dict.get("text", ""))
-        elif element_type == "Image":
-            img_base64 = element_dict["metadata"].get("image_base64", "")
-            if img_base64: images.append(img_base64)
-            text_parts.append(element_dict.get("text", ""))
-        else:
-            text_parts.append(element_dict.get("text", ""))
-    
-    return {"text": "\n\n".join(text_parts), "tables": tables, "images": images, "types": element_types}
+        data = element.to_dict()
+        element_type = data["type"]
+        metadata = data.get("metadata", {})
+        types.add(element_type)
+        text = data.get("text", "")
+        if text:
+            text_parts.append(text)
+        if element_type == "Table" and metadata.get("text_as_html"):
+            tables.append(metadata["text_as_html"])
+        if element_type == "Image" and metadata.get("image_base64"):
+            images.append(metadata["image_base64"])
+    # CompositeElement/TableChunk text is already a bounded slice. Reconstructing
+    # full original-element text here repeats the entire page for every slice.
+    text = chunk.text if originals and hasattr(chunk, "text") else "\n\n".join(text_parts)
+    return {"text": text, "tables": tables, "images": images, "types": types}
 
-def create_ai_enhanced_summary(text: str, tables: list, images: list) -> str:
-    """Use AI to create searchable descriptions of multimodal content"""
-    try:
-        model_name = os.getenv("GENERATION_MODEL", "gemma-4-31b-it")
-        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0)
-        message_content = [{"type": "text", "text": f"Analyze this document section.\n\nTEXT:\n{text}\n\nTables: {len(tables)}"}]
-        
-        for i, table_html in enumerate(tables):
-            message_content.append({"type": "text", "text": f"Table {i+1} HTML:\n{table_html}"})
-        
-        max_images = 3
-        for img_base64 in images[:max_images]:
-            message_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}})
-        
-        if len(images) > max_images:
-            message_content[0]["text"] += f"\nNote: {len(images) - max_images} additional images omitted."
 
-        response = llm.invoke([HumanMessage(content=message_content)])
-        
-        # Robustly extract text content
-        content = response.content
-        if isinstance(content, list):
-            text_parts = []
-            for item in content:
-                if isinstance(item, dict) and "text" in item:
-                    text_parts.append(item["text"])
-                elif isinstance(item, str):
-                    text_parts.append(item)
-            return "".join(text_parts)
-        return str(content)
-    except Exception as e:
-        print(f"AI summary failed: {e}")
-        return f"{text[:300]}... [Tables: {len(tables)}, Images: {len(images)}]"
-
-def summarise_chunks(chunks):
-    """Process all chunks with AI Summaries"""
-    print("Processing chunks with AI Summaries...")
-    langchain_documents = []
-    for i, chunk in enumerate(chunks):
-        print(f"   Processing chunk {i+1}/{len(chunks)}")
-        content_data = separate_content_types(chunk)
-        if content_data['tables'] or content_data['images']:
-            enhanced_content = create_ai_enhanced_summary(content_data['text'], content_data['tables'], content_data['images'])
-        else:
-            enhanced_content = content_data['text']
-        
-        doc = Document(
-            page_content=enhanced_content,
-            metadata={"original_content": json.dumps({"raw_text": content_data['text'], "tables_html": content_data['tables'], "images_base64": content_data['images']})}
-        )
-        langchain_documents.append(doc)
-    return langchain_documents
-
-def create_vector_store(documents, persist_directory="db/chroma_db"):
-    """Create and persist ChromaDB vector store"""
-    print(f"Creating vector store at {persist_directory}...")
-    embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vectorstore = Chroma.from_documents(
-        documents=documents,
-        embedding=embedding_model,
-        persist_directory=persist_directory, 
-        collection_metadata={"hnsw:space": "cosine"}
+def create_ai_enhanced_summary(text: str, tables: list, images: list, *, provider=None):
+    """Optional expensive enhancement; ordinary ingestion does not call this."""
+    document = Document(page_content=text, metadata={
+        "original_content": json.dumps({
+            "raw_text": text, "tables_html": tables, "images_base64": images,
+        }),
+    })
+    return generate_final_answer(
+        [document], "Describe this document section for retrieval. Preserve its key facts, numbers, table labels, and image content.",
+        provider=provider,
     )
-    return vectorstore
 
-def run_complete_ingestion_pipeline(pdf_path: str):
-    """Run the complete RAG ingestion pipeline"""
+
+def summarise_chunks(chunks, *, use_ai_summaries=False, provider=None, progress_callback=None):
+    """Prepare searchable raw evidence with no model calls unless explicitly requested."""
+    documents = []
+    total = len(chunks)
+    for index, chunk in enumerate(chunks):
+        data = separate_content_types(chunk)
+        originals = getattr(getattr(chunk, "metadata", None), "orig_elements", None) or [chunk]
+        pages, sources = set(), []
+        for element in originals:
+            metadata = getattr(element, "metadata", None)
+            if metadata and metadata.page_number is not None:
+                pages.add(metadata.page_number)
+            if metadata and metadata.filename and metadata.filename not in sources:
+                sources.append(metadata.filename)
+        text = data["text"]
+        if use_ai_summaries and (data["tables"] or data["images"]):
+            # Raw evidence remains available for the answer even when summaries are enabled.
+            text = create_ai_enhanced_summary(text, data["tables"], data["images"], provider=provider)
+        if not text.strip():
+            if data["tables"]:
+                text = "\n".join(data["tables"])
+            elif data["images"]:
+                text = "Visual document evidence on pages " + ", ".join(str(page) for page in sorted(pages))
+            else:
+                continue
+        documents.append(Document(page_content=text, metadata={
+            "source": ", ".join(sources) or "document",
+            "pages": json.dumps(sorted(pages)),
+            "content_types": ",".join(sorted(data["types"])),
+            "original_content": json.dumps({
+                "raw_text": data["text"], "tables_html": data["tables"], "images_base64": data["images"],
+            }),
+        }))
+        if progress_callback:
+            progress_callback(index + 1, total, "Preparing searchable text and source evidence...")
+    return documents
+
+
+def create_vector_store(documents, persist_directory="db/chroma_db", *, progress_callback=None):
+    """Batch upserts and reuse existing record IDs instead of embedding them again."""
+    return build_vector_store(
+        documents, persist_directory, get_embedding_model(), progress_callback=progress_callback,
+    )
+
+
+def load_vector_store(db_path):
+    return open_vector_store(db_path, get_embedding_model())
+
+
+def get_or_create_vector_store(elements, persist_directory, *, progress_callback=None,
+                               document_hash=None):
+    """Reopen a verified on-disk index across sessions and application restarts."""
+    with index_lock(persist_directory):
+        fingerprint = elements_fingerprint(elements)
+        if index_is_ready(persist_directory, fingerprint, document_hash):
+            db = load_vector_store(persist_directory)
+            manifest = read_index_manifest(persist_directory)
+            if db._collection.count() == manifest["count"]:
+                if progress_callback:
+                    progress_callback(1, 1, f"Reused saved index: {manifest['count']} chunks.")
+                return db
+        if progress_callback:
+            progress_callback(0, 1, "Chunking document once...")
+        chunks = create_chunks_by_title(elements)
+        documents = summarise_chunks(chunks, progress_callback=progress_callback)
+        return build_vector_store(
+            documents, persist_directory, get_embedding_model(), progress_callback=progress_callback,
+            replace=True, source_fingerprint=fingerprint, document_hash=document_hash,
+        )
+
+
+def run_complete_ingestion_pipeline(pdf_path: str, *, persist_directory="db/chroma_db",
+                                    progress_callback=None, document_hash=None):
     elements = partition_document(pdf_path)
-    chunks = create_chunks_by_title(elements)
-    summarised = summarise_chunks(chunks)
-    return create_vector_store(summarised)
+    return get_or_create_vector_store(
+        elements, persist_directory, progress_callback=progress_callback, document_hash=document_hash,
+    )
 
-def generate_final_answer(chunks, query):
-    """Generate final answer using multimodal content"""
-    try:
-        model_name = os.getenv("GENERATION_MODEL", "gemma-4-31b-it")
-        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0)
-        prompt_text = f"Based on the following documents, answer: {query}\n\nCONTENT:\n"
-        
-        for i, chunk in enumerate(chunks):
-            prompt_text += f"--- Doc {i+1} ---\n"
-            if "original_content" in chunk.metadata:
-                data = json.loads(chunk.metadata["original_content"])
-                prompt_text += f"TEXT: {data.get('raw_text', '')}\n"
-                for j, table in enumerate(data.get('tables_html', [])):
-                    prompt_text += f"Table {j+1}: {table}\n"
-        
-        message_content = [{"type": "text", "text": prompt_text}]
-        max_total_images, images_added = 5, 0
-        for chunk in chunks:
-            if images_added >= max_total_images: break
-            if "original_content" in chunk.metadata:
-                imgs = json.loads(chunk.metadata["original_content"]).get("images_base64", [])
-                for img in imgs:
-                    if images_added < max_total_images:
-                        message_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
-                        images_added += 1
-        
-        response = llm.invoke([HumanMessage(content=message_content)])
-        
-        # Robustly extract text content
-        content = response.content
-        if isinstance(content, list):
-            text_parts = []
-            for item in content:
-                if isinstance(item, dict) and "text" in item:
-                    text_parts.append(item["text"])
-                elif isinstance(item, str):
-                    text_parts.append(item)
-            return "".join(text_parts)
-        return str(content)
-    except Exception as e:
-        print(f"Answer failed: {e}")
-        return "Error generating answer."
 
 if __name__ == "__main__":
-    # Example usage
     file_path = "./docs/sample.pdf"
     if os.path.exists(file_path):
         db = run_complete_ingestion_pipeline(file_path)
         query = "What is the main topic?"
-        retrieved = db.as_retriever(search_kwargs={"k": 3}).invoke(query)
-        print(generate_final_answer(retrieved, query))
+        documents, _ = retrieve_documents(db, query)
+        print(generate_final_answer(documents, query))
