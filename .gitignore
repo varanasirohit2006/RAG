@@ -11,6 +11,9 @@ __pycache__/
 venv/
 .cache/
 .pytest_cache/
+*.log
+*.tmp
+*.bak
 test-results/
 evaluation_runs/
 evaluation_datasets/

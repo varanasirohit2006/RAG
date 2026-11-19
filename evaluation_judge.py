@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from evaluation_data import validate_score
+from provider_limits import (cache_root, current_openrouter_limit, ensure_openrouter_available,
+                             limit_message, read_json, record_openrouter_limit, write_json)
 
 JUDGE_API_KEYS = {"google": "GOOGLE_API_KEY", "openai": "OPENAI_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
 
@@ -25,8 +27,18 @@ def provider_status_code(exc):
             if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
                 return value
         # LangChain's authentication/access wrappers keep the code on their cause.
-        exc = exc.__cause__
+        exc = exc.__cause__ or exc.__context__
     return None
+
+
+class JudgeQuotaExceeded(RuntimeError):
+    """No more requests are sent by this judge after a provider HTTP 429."""
+
+    status_code = 429
+
+    def __init__(self, limit=None):
+        self.limit = limit
+        super().__init__(limit_message(limit) if limit else "Judge rate or quota limit reached (HTTP 429). Further judge requests stopped; retry after the provider limit resets. Completed scores are retained.")
 
 
 @dataclass(frozen=True)
@@ -53,8 +65,8 @@ class JudgeSettings:
             raise ValueError("EVALUATION_MAX_RETRIES must be between 0 and 2.")
         if not 1024 <= self.max_tokens <= 8192:
             raise ValueError("EVALUATION_MAX_TOKENS must be between 1024 and 8192.")
-        if self.reasoning_effort not in {"low", "medium", "high"}:
-            raise ValueError("EVALUATION_REASONING_EFFORT must be low, medium, or high.")
+        if self.reasoning_effort not in {"minimal", "low", "medium", "high"}:
+            raise ValueError("EVALUATION_REASONING_EFFORT must be minimal, low, medium, or high.")
 
     @classmethod
     def from_env(cls):
@@ -91,23 +103,31 @@ def _parse_structured_text(content, response_model):
         raise ValueError("Judge did not return one complete schema-valid JSON object.")
 
 
-def create_gemma_json_llm(settings, *, model=None):
-    """Modern Ragas adapter for Gemma without tool calling or multiple candidates."""
-    if model is None:
+def create_google_json_llm(settings, *, model=None):
+    """Schema-valid Google judging with bounded requests and reusable completed steps."""
+    owned = model is None
+    if owned:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        model = ChatGoogleGenerativeAI(
-            model=settings.model, temperature=0, timeout=settings.timeout,
+        options = dict(model=settings.model, temperature=0, timeout=settings.timeout,
             # The Google integration counts attempts: 1 disables SDK retries.
             # Retry transient failures here within the shared deadline/budget.
             max_retries=1, max_output_tokens=settings.max_tokens,
         )
-    return create_json_judge_llm(settings, model=model)
+        if settings.model.removeprefix('models/').startswith('gemini-3.'):
+            options.update(reasoning_effort=settings.reasoning_effort, include_thoughts=False)
+        model = ChatGoogleGenerativeAI(**options)
+    return create_json_judge_llm(settings, model=model, response_cache=cache_root() / 'judge_responses' if owned else None)
+
+
+def create_gemma_json_llm(settings, *, model=None):
+    return create_google_json_llm(settings, model=model)
 
 
 def create_openrouter_json_llm(settings, *, model=None):
     """Pin a free OpenRouter model; never fall back to a paid or random model."""
-    if model is None:
+    owned = model is None
+    if owned:
         import httpx
         from langchain_openai import ChatOpenAI
 
@@ -124,10 +144,10 @@ def create_openrouter_json_llm(settings, *, model=None):
             http_async_client=httpx.AsyncClient(timeout=settings.timeout),
             extra_body={"provider": {"max_price": {"prompt": 0, "completion": 0}}},
         )
-    return create_json_judge_llm(settings, model=model)
+    return create_json_judge_llm(settings, model=model, response_cache=cache_root() / 'judge_responses' if owned else None)
 
 
-def create_json_judge_llm(settings, *, model):
+def create_json_judge_llm(settings, *, model, response_cache=None):
     """Schema-validated JSON judging without tool calls or multiple candidates."""
     from ragas.llms.base import InstructorBaseRagasLLM
     from langchain_core.messages import HumanMessage
@@ -138,8 +158,13 @@ def create_json_judge_llm(settings, *, model):
             self.provider = settings.provider
             self.client = self
             self.is_async = True
+            self.quota_exhausted = False
+            self.limit = None
+            self.request_lock = asyncio.Lock()
             self.usage = {"structured_generation_requests": 0, "json_repairs": 0, "provider_retries": 0, "request_seconds": 0.0,
-                          "token_usage_requests": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+                          "token_usage_requests": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                          "quota_rejections": 0, "requests_blocked_by_quota": 0,
+                          "response_cache_hits": 0, "queue_wait_seconds": 0.0}
 
         def generate(self, prompt, response_model):
             try:
@@ -155,7 +180,12 @@ def create_json_judge_llm(settings, *, model):
             return {}
 
         async def create(self, *, messages, response_model, **kwargs):
-            # One total deadline includes provider calls, backoff and JSON repair.
+            # Queue wait belongs to the complete metric's deadline, not this request's.
+            if settings.provider == 'openrouter':
+                started = time.monotonic()
+                async with self.request_lock:
+                    self.usage['queue_wait_seconds'] += time.monotonic() - started
+                    return await asyncio.wait_for(self._create(messages=messages, response_model=response_model), timeout=settings.timeout)
             return await asyncio.wait_for(
                 self._create(messages=messages, response_model=response_model), timeout=settings.timeout,
             )
@@ -176,13 +206,44 @@ def create_json_judge_llm(settings, *, model):
                     contents.extend(value)
                 else:
                     raise ValueError("Unsupported multimodal judge message content.")
+            cache_path = None
+            if response_cache:
+                import hashlib
+                identity = {'provider': settings.provider, 'model': settings.model,
+                            'max_tokens': settings.max_tokens, 'messages': contents}
+                key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+                cache_path = response_cache / (key + '.json')
+                saved = read_json(cache_path)
+                if isinstance(saved, dict) and 'response' in saved:
+                    try:
+                        result = response_model.model_validate(saved['response'])
+                        self.usage['response_cache_hits'] += 1
+                        return result
+                    except ValueError:
+                        pass
             last_error = None
             for attempt in range(settings.max_retries + 1):
                 started = time.perf_counter()
-                self.usage["structured_generation_requests"] += 1
                 retry_error = None
                 try:
-                    response = await model.ainvoke([HumanMessage(content=contents)])
+                    # Free-route requests are serialized, including the subrequests
+                    # Ragas makes inside a metric. Queued work observes the first 429.
+                    async def invoke():
+                        if self.quota_exhausted:
+                            self.usage["requests_blocked_by_quota"] += 1
+                            raise JudgeQuotaExceeded(self.limit)
+                        if settings.provider == 'openrouter':
+                            ensure_openrouter_available()
+                        self.usage["structured_generation_requests"] += 1
+                        try:
+                            return await model.ainvoke([HumanMessage(content=contents)])
+                        except Exception as exc:
+                            if provider_status_code(exc) == 429:
+                                self.quota_exhausted = True
+                                self.limit = record_openrouter_limit(exc) if settings.provider == 'openrouter' else None
+                                self.usage["quota_rejections"] += 1
+                            raise
+                    response = await invoke()
                 except Exception as exc:
                     if provider_status_code(exc) not in {500, 502, 503, 504} or attempt == settings.max_retries:
                         raise
@@ -205,7 +266,10 @@ def create_json_judge_llm(settings, *, model):
                     # A truncated verdict must fail visibly, not be repaired by guessing missing fields.
                     raise ValueError("Judge output was truncated; increase EVALUATION_MAX_TOKENS or shorten the dataset reference.")
                 try:
-                    return _parse_structured_text(response.content, response_model)
+                    result = _parse_structured_text(response.content, response_model)
+                    if cache_path:
+                        write_json(cache_path, {'response': result.model_dump(mode='json')})
+                    return result
                 except ValueError as exc:
                     last_error = exc
                     if attempt == settings.max_retries:
@@ -252,8 +316,8 @@ class RagasJudge:
         api_key = os.getenv(key_name)
         if not api_key:
             raise ValueError(f"{key_name} is required for judged evaluation. Use the retrieval profile for local metrics.")
-        if self.settings.provider == "google" and self.settings.model.startswith("gemma"):
-            self.llm = create_gemma_json_llm(self.settings)
+        if self.settings.provider == "google" and self.settings.model.removeprefix('models/').startswith(("gemma", 'gemini-3.')):
+            self.llm = create_google_json_llm(self.settings)
             self.client = self.llm
         elif self.settings.provider == "openrouter":
             self.llm = create_openrouter_json_llm(self.settings)

@@ -1,6 +1,7 @@
 """Bounded jobs, browser-safe serializers and optional retrieval experiments."""
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -65,16 +66,48 @@ def source(document, document_id):
     return {'id': chunk_id(document), 'text': payload['raw_text'] or document.page_content,
             'pages': sorted(document_pages(document)), 'tables': payload['tables_html'],
             'images': [f'/api/documents/{document_id}/assets/{name}' for name in assets if re.fullmatch(r'[a-f0-9]{64}\.jpg', name)],
-            'relevance_score': document.metadata.get('relevance_score')}
+            'relevance_score': document.metadata.get('relevance_score'),
+            'original_sources': json.loads(document.metadata.get('source_pages', '[]'))}
+
+
+class SavedJob:
+    def __init__(self, value):
+        self.value = value
+
+    def snapshot(self):
+        return dict(self.value)
+
+    def cancel(self):
+        pass
 
 
 class Jobs:
-    def __init__(self):
+    def __init__(self, catalog=None):
         self.lock = threading.RLock()
         self.entries = {}
+        self.catalog = catalog
+        self.closed = False
+        if catalog:
+            catalog.recover_jobs()
 
-    def submit(self, owner, document_id, kind, target):
+    @staticmethod
+    def safe_snapshot(value):
+        value = clean(value)
+        if value.get('error'):
+            message = value['error']
+            for name in ('GOOGLE_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'COHERE_API_KEY'):
+                secret = os.getenv(name)
+                if secret:
+                    message = message.replace(secret, '[redacted]')
+            if any(word in message.lower() for word in ('api_key', 'apikey', 'authorization', 'bearer', 'sk-')):
+                message = 'Provider request failed. Check server credentials and provider status.'
+            value['error'] = re.sub(r'[A-Za-z]:[\\/][^\s]+', '[server file]', message)[:600]
+        return value
+
+    def submit(self, owner, document_id, kind, target, *, request=None, retry_of=None):
         with self.lock:
+            if self.closed:
+                raise HTTPException(503, 'The server is stopping. Retry after it restarts.')
             active = [e for e in self.entries.values() if e['job'].snapshot()['status'] not in TERMINAL]
             if len(active) >= 4 or sum(e['owner'] == owner for e in active) >= 2:
                 raise HTTPException(429, 'Work queue is full. Wait for a running job or cancel it.')
@@ -82,12 +115,32 @@ class Jobs:
                 if len(self.entries) >= 100 and self.entries[key]['job'].snapshot()['status'] in TERMINAL:
                     del self.entries[key]
             key = uuid.uuid4().hex
-            self.entries[key] = {'owner': owner, 'document_id': document_id, 'kind': kind, 'job': BackgroundJob(target)}
+            last_saved = 0
+            def persist(value):
+                nonlocal last_saved
+                if self.catalog:
+                    with self.lock:
+                        if self.closed:
+                            return
+                        now = time.monotonic()
+                        if value['status'] in TERMINAL or now - last_saved >= 0.5:
+                            self.catalog.save_job(key, owner, document_id, kind, self.safe_snapshot(value))
+                            last_saved = now
+            if self.catalog:
+                self.catalog.save_job(key, owner, document_id, kind, {'status': 'queued', 'done': 0, 'total': 1,
+                    'message': 'Queued', 'partial_text': '', 'elapsed_seconds': 0, 'events': [], 'result': None, 'error': None},
+                    request=request, retry_of=retry_of)
+            self.entries[key] = {'owner': owner, 'document_id': document_id, 'kind': kind,
+                                 'request': request, 'job': BackgroundJob(target, key=key, on_change=persist)}
             return {'id': key, 'document_id': document_id, 'kind': kind}
 
     def get(self, owner, key):
         with self.lock:
             entry = self.entries.get(key)
+            if not entry and self.catalog:
+                stored = self.catalog.get_job(owner, key)
+                if stored:
+                    entry = {**stored, 'job': SavedJob(stored['snapshot'])}
             if not entry or entry['owner'] != owner:
                 raise HTTPException(404, 'Job not found.')
             return entry
@@ -95,14 +148,48 @@ class Jobs:
     def snapshot(self, owner, key):
         entry = self.get(owner, key)
         value = entry['job'].snapshot()
-        if value['error']:
-            # Provider exceptions can contain URLs or credentials. Expose an actionable,
-            # bounded message and never serialize native clients or arbitrary exception reprs.
-            message = value['error']
-            if any(word in message.lower() for word in ('api_key', 'apikey', 'authorization', 'bearer', 'sk-')):
-                message = 'Provider request failed. Check server credentials and provider status.'
-            value['error'] = re.sub(r'[A-Za-z]:[\\/][^\s]+', '[server file]', message)[:600]
-        return {'id': key, 'kind': entry['kind'], 'document_id': entry['document_id'], **clean(value)}
+        stored = self.catalog.get_job(owner, key) if self.catalog else None
+        retry_job_id = stored['retry_job_id'] if stored else None
+        setup = entry.get('request', {}).get('body') if entry.get('request') and entry['kind'] == 'evaluation_batch' else None
+        return {'id': key, 'kind': entry['kind'], 'document_id': entry['document_id'], 'evaluation_setup': setup,
+                **self.safe_snapshot(value), 'retry_job_id': retry_job_id,
+                'retryable': bool(value.get('recovery_required') and entry.get('request') and not retry_job_id)}
+
+    def pending(self, owner):
+        with self.lock:
+            keys = [row['id'] for row in self.catalog.pending_jobs(owner)] if self.catalog else [
+                key for key, entry in self.entries.items() if entry['owner'] == owner
+                and entry['job'].snapshot()['status'] not in TERMINAL]
+            return [self.snapshot(owner, key) for key in keys]
+
+    def retry(self, owner, key, dispatch):
+        """One explicit retry per interrupted attempt, including concurrent clicks."""
+        with self.lock:
+            entry = self.get(owner, key)
+            stored = self.catalog.get_job(owner, key) if self.catalog else None
+            if stored and stored['retry_job_id']:
+                next_entry = self.get(owner, stored['retry_job_id'])
+                return {'id': stored['retry_job_id'], 'document_id': next_entry['document_id'], 'kind': next_entry['kind']}
+            if not entry['job'].snapshot().get('recovery_required') or not entry.get('request'):
+                raise HTTPException(409, 'This job cannot be resumed. Start a new operation from its page.')
+            return dispatch(entry, key)
+
+    def shutdown(self):
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+            for key, entry in self.entries.items():
+                value = entry['job'].snapshot()
+                if value['status'] in TERMINAL:
+                    if self.catalog:
+                        self.catalog.save_job(key, entry['owner'], entry['document_id'], entry['kind'], self.safe_snapshot(value))
+                    continue
+                if self.catalog:
+                    value.update(status='failed', message='Interrupted by server restart', recovery_required=True,
+                                 error='The server stopped before this job finished. Retry to reuse completed work; unfinished model requests may use API credits.')
+                    self.catalog.save_job(key, entry['owner'], entry['document_id'], entry['kind'], self.safe_snapshot(value))
+                entry['job'].cancel()
 
 
 def retrieval_experiment(database, request, job, document_id):

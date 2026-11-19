@@ -371,3 +371,47 @@ def test_gemma_adapter_does_not_score_truncated_verdicts():
     with pytest.raises(ValueError, match="truncated"):
         asyncio.run(adapter.agenerate("Judge the statement.", Verdict))
     assert adapter.usage["structured_generation_requests"] == 1
+
+
+def test_scheduling_alternates_strategies_instead_of_using_keyword_first(runtime, monkeypatch):
+    import retrieval_runtime
+    db, output, state = runtime
+    monkeypatch.setenv('EVALUATION_CONCURRENCY', '1')
+    order = []
+    class Retriever:
+        def __init__(self, strategy):
+            self.strategy = strategy
+        def invoke(self, question):
+            order.append(self.strategy)
+            return [Document(page_content=self.strategy + ' evidence', metadata={'chunk_id': 'c1', 'pages': [1]})]
+    docs = Retriever('Keyword').invoke('setup')
+    order.clear()
+    monkeypatch.setattr(retrieval_runtime, 'get_retrievers', lambda db, k=10: (Retriever('Vector'), Retriever('Keyword'), Retriever('Hybrid'), docs))
+    asyncio.run(evaluation.run_evaluation(str(db), dataset=[row(id='q1'), row(id='q2', question='Another question?')],
+        profile='full', strategies=['Keyword', 'Vector', 'Hybrid'], output_dir=output))
+    assert order == ['Keyword', 'Vector', 'Hybrid', 'Keyword', 'Vector', 'Hybrid']
+
+
+def test_complete_metric_deadline_is_separate_from_each_request_deadline(runtime, monkeypatch):
+    db, output, _ = runtime
+    # Production settings remain valid; scale the request limit in the test only.
+    settings = evaluation.JudgeSettings(provider='google', model='test-judge')
+    object.__setattr__(settings, 'timeout', 0.02)
+    monkeypatch.setattr(evaluation.JudgeSettings, 'from_env', lambda: settings)
+    monkeypatch.setenv('EVALUATION_METRIC_TIMEOUT', '15')
+    class MultiStepJudge:
+        def __init__(self, *args, **kwargs):
+            pass
+        def prepare(self):
+            pass
+        async def score(self, name, **kwargs):
+            for _ in range(4):
+                await asyncio.sleep(0.01)  # Each step fits; their sum exceeds 0.02s.
+            return {'value': 0.8}
+        async def close(self):
+            pass
+    monkeypatch.setattr(evaluation, 'RagasJudge', MultiStepJudge)
+    result = asyncio.run(evaluation.run_evaluation(str(db), dataset=[row(id='q1')],
+        profile='full', strategies=['Vector'], output_dir=output))
+    assert result.attrs['status'] == 'completed'
+    assert result.iloc[0]['factual_correctness_count'] == 1

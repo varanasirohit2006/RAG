@@ -1,0 +1,119 @@
+"""Remember provider-reported free limits without persisting credentials or prose."""
+import hashlib
+import json
+import os
+import threading
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+_lock = threading.Lock()
+
+
+def cache_root():
+    return Path(os.getenv('RAG_EVALUATION_CACHE_DIR', str(Path(__file__).resolve().parent / 'evaluation_runs' / 'cache')))
+
+
+def _state_path():
+    key = os.getenv('OPENROUTER_API_KEY', '')
+    if not key:
+        return None
+    fingerprint = hashlib.sha256(key.encode()).hexdigest()
+    return cache_root() / 'provider_limits' / (fingerprint + '.json')
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
+    try:
+        temporary.write_text(json.dumps(value, allow_nan=False), encoding='utf-8')
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def read_json(path):
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+
+
+def _number(value):
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def limit_from_body(body, headers=None, *, now=None):
+    """Use the provider's reset timestamp; never invent a daily reset."""
+    now = time.time() if now is None else now
+    body = body if isinstance(body, dict) else {}
+    error = body.get('error', body)
+    error = error if isinstance(error, dict) else {}
+    metadata = error.get('metadata', {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    headers = {str(k).lower(): v for k, v in {**(headers or {}), **(metadata.get('headers') or {})}.items()}
+    reset = _number(headers.get('x-ratelimit-reset'))
+    if reset and reset > 10**11:
+        reset /= 1000
+    retry_after = _number(headers.get('retry-after'))
+    if not reset and retry_after is not None:
+        reset = now + max(0, retry_after)
+    daily = metadata.get('limit_source') == 'openrouter_free_tier_daily' or 'free-models-per-day' in str(error.get('message', ''))
+    return {'provider': 'openrouter', 'status_code': 429, 'scope': 'daily' if daily else 'rate_or_quota',
+            'limit': _number(headers.get('x-ratelimit-limit')),
+            'remaining': _number(headers.get('x-ratelimit-remaining')),
+            'reset_at': datetime.fromtimestamp(reset, timezone.utc).isoformat() if reset else None}
+
+
+def record_openrouter_limit(exc):
+    value = getattr(exc, 'limit', None)
+    if not isinstance(value, dict):
+        response = getattr(exc, 'response', None)
+        value = limit_from_body(getattr(exc, 'body', None), getattr(response, 'headers', None))
+    path = _state_path()
+    if path and value.get('reset_at'):
+        with _lock:
+            write_json(path, value)
+    return value
+
+
+def current_openrouter_limit():
+    path = _state_path()
+    value = read_json(path) if path else None
+    if not isinstance(value, dict) or not value.get('reset_at'):
+        return None
+    try:
+        return value if datetime.fromisoformat(value['reset_at']).timestamp() > time.time() else None
+    except (ValueError, TypeError):
+        return None
+
+
+def limit_message(value):
+    value = value or {}
+    message = 'OpenRouter daily free-model request allowance exhausted' if value.get('scope') == 'daily' else 'OpenRouter rate or quota limit reached'
+    if value.get('provider') and value['provider'] != 'openrouter':
+        message = value['provider'] + ' rate or quota limit reached'
+    if value.get('limit') is not None:
+        message += f" ({value['limit']} allowed, {value.get('remaining', 0)} remaining)"
+    if value.get('reset_at'):
+        message += f". Provider reset: {value['reset_at']}"
+    return message + '. Completed work is retained; retry missing scores after the limit resets.'
+
+
+class OpenRouterLimitExceeded(RuntimeError):
+    status_code = 429
+
+    def __init__(self, value):
+        self.limit = value
+        super().__init__(limit_message(value))
+
+
+def ensure_openrouter_available():
+    value = current_openrouter_limit()
+    if value:
+        raise OpenRouterLimitExceeded(value)

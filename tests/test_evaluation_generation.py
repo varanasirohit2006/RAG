@@ -22,7 +22,7 @@ def runtime(monkeypatch, tmp_path):
     monkeypatch.setenv("GENERATION_MODEL", "test-drafter")
     monkeypatch.setenv("EVALUATION_MODEL", "test-verifier")
     monkeypatch.setenv("EVALUATION_PROVIDER", "google")
-    for name in ("SYNTHETIC_GENERATION_PROVIDER", "SYNTHETIC_GENERATION_MODEL", "SYNTHETIC_GENERATION_TIMEOUT", "SYNTHETIC_GENERATION_MAX_TOKENS", "SYNTHETIC_GENERATION_CONCURRENCY"):
+    for name in ("SYNTHETIC_GENERATION_PROVIDER", "SYNTHETIC_GENERATION_MODEL", "SYNTHETIC_GENERATION_TIMEOUT", "SYNTHETIC_GENERATION_MAX_TOKENS", "SYNTHETIC_GENERATION_CONCURRENCY", 'SYNTHETIC_ALLOW_SAME_MODEL_VERIFICATION'):
         monkeypatch.delenv(name, raising=False)
     docs = [Document(page_content=f"Invoice {index} total is {100 + index}.45 USD. Payment is due within thirty calendar days.",
                      metadata={"chunk_id": f"c{index}", "pages": [index]}) for index in range(1, 7)]
@@ -103,6 +103,49 @@ def test_automatic_questions_have_verified_exact_evidence_and_honest_provenance(
     cached = generate(runtime, question_count=3)
     assert cached["cache_reused"] is True
     assert state == before
+
+
+def test_openrouter_drafting_inherits_ultra_and_closes_each_jobs_transport(runtime, monkeypatch):
+    import httpx
+    model = 'nvidia/nemotron-3-ultra-550b-a55b:free'
+    monkeypatch.setenv('GENERATION_PROVIDER', 'openrouter')
+    monkeypatch.setenv('GENERATION_MODEL', model)
+    original = generation._build_clients
+    clients = []
+    def build(configuration):
+        assert configuration['draft_provider'] == 'openrouter' and configuration['draft_model'] == model
+        draft, verifier = original(configuration)
+        draft.http_async_client = httpx.AsyncClient()
+        clients.append(draft.http_async_client)
+        return draft, verifier
+    monkeypatch.setattr(generation, '_build_clients', build)
+    for _ in range(2):
+        result = generate(runtime, question_count=1, force=True)
+        assert result['provenance']['configuration']['draft_model'] == model
+    assert len(clients) == 2 and clients[0] is not clients[1]
+    assert all(client.is_closed for client in clients)
+
+
+def test_explicit_same_model_generation_is_labelled_as_source_checking(runtime, monkeypatch):
+    monkeypatch.setenv('GENERATION_MODEL', 'gemini-3.1-flash-lite')
+    monkeypatch.setenv('EVALUATION_MODEL', 'gemini-3.1-flash-lite')
+    monkeypatch.setenv('SYNTHETIC_ALLOW_SAME_MODEL_VERIFICATION', 'true')
+    dataset = generate(runtime, question_count=1)
+    assert dataset['provenance']['configuration']['independent_reference_verification'] is False
+    assert any('not independent verification' in warning for warning in dataset['warnings'])
+
+
+def test_combined_questions_balance_original_pdfs_and_report_reference_coverage(runtime, monkeypatch):
+    db, output, documents, _ = runtime
+    original_sources = [{'document_id': 'pdf-a', 'name': 'A.pdf'}, {'document_id': 'pdf-b', 'name': 'B.pdf'}]
+    for index, document in enumerate(documents):
+        document.metadata['source_pages'] = json.dumps([original_sources[0 if index < 3 else 1]])
+    async def sources(*args):
+        return documents, {'document_hash': HASH, 'corpus_version': 'combined', 'source_documents': original_sources}
+    monkeypatch.setattr(generation, '_load_sources', sources)
+    result = generate(runtime, question_count=2)
+    coverage = result['provenance']['source_document_coverage']
+    assert len(coverage) == 2 and all(item['linked_questions'] >= 1 for item in coverage)
 
 
 @pytest.mark.parametrize("failure", ["bad_quote", "unknown_chunk"])

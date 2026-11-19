@@ -15,7 +15,7 @@ def warm_runtime():
     from generation_runtime import get_generation_model, resolve_provider
     from retrieval_runtime import get_reranker
     provider = resolve_provider()
-    if provider == 'ollama' or (provider == 'google' and os.getenv('GOOGLE_API_KEY')):
+    if provider == 'ollama' or (provider == 'google' and os.getenv('GOOGLE_API_KEY')) or (provider == 'openrouter' and os.getenv('OPENROUTER_API_KEY')):
         get_generation_model()
     try:
         get_reranker(top_n=int(os.getenv('RETRIEVAL_TOP_N', '3')))

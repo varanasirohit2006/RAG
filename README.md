@@ -1,476 +1,336 @@
-# Multimodal RAG Workspace
+# RAG Workspace
 
-React + TypeScript provides the document workspace; FastAPI adapts the existing
-Python OCR, search, generation and Ragas evaluation services. Upload PDFs, ask
-streamed cited questions, browse source passages, and compare retrieval strategies
-using automatically generated, source-verified questions or imported datasets.
+A React + TypeScript workspace for **automatic RAG evaluation**, backed by
+FastAPI and Python. Upload an English PDF, let the system generate and verify
+its own test questions, then compare retrieval strategies and answer quality.
+Manual questions are not required to run a benchmark.
 
-The workspace contains only this project folder. Uploaded PDFs, databases,
-indexes, extraction caches, evaluation history and temporary QA artifacts were
-cleared on 18 November 2026. Upload and prepare a PDF to start a new evaluation.
-Runtime storage is created automatically when needed. `.env`, installed
-dependencies, source, tests and deployment files are preserved. Reference images
-and the original handbook DOCX are in `project_docs/`.
+The app also provides cited document Q&A, source inspection and a retrieval lab.
+Native text and tables use local extraction; scanned pages use bundled RapidOCR
+without installing Tesseract or Poppler.
 
-## Response time and progress
+## Get started
 
-Ingestion indexes original OCR text and native table content directly instead of
-sending every table/image chunk through a serial cloud summarization call.
-Extracted documents, local embedding models, lexical retrievers, and completed
-indexes are reused. Pipeline/configuration revisions are recorded in index
-manifests, and questions use the existing index.
+Requirements: Python 3.12 or 3.13, Node.js 22+, and provider credentials for
+question generation and quality judging. The Linux container uses Python 3.12.
 
-Generation receives bounded relevant original evidence, including selected
-images. Tokens stream as they arrive, and stage progress separates extraction,
-indexing, retrieval, reranking, generation, and evaluation. Google requests have
-a deadline and one SDK attempt; reranking has a shorter deadline. Evaluation
-uses bounded concurrency and reusable answer/metric caches.
+From the project folder on Windows:
 
-Gemma verification and judging honor `EVALUATION_TIMEOUT` (90 seconds by
-default), including retry backoff and JSON repair. `EVALUATION_MAX_RETRIES=1`
-allows at most two attempts shared between transient HTTP 500/502/503/504 errors
-and malformed JSON; the SDK makes one attempt per call. Authentication/access
-errors fail immediately. Automatic-generation diagnostics record HTTP codes,
-local deadline failures and actual verifier requests/retries. Unverified
-references are never scored.
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+cd frontend
+npm ci
+npm run build
+cd ..
+```
 
-### Optional free OpenRouter judge
+On macOS/Linux, activate the environment with `source .venv/bin/activate`.
 
-Store the OpenRouter key only in the project-root `.env`, alongside the existing
-Google key. To explicitly choose the free judge for both source verification and
-Ragas metrics, set these variables and restart the Python app:
+Create `.env` from `.env.example` **only if it does not already exist**, then
+configure your credentials. Preserve existing API keys when changing settings.
 
 ```dotenv
-OPENROUTER_API_KEY=your_key_here
-EVALUATION_PROVIDER=openrouter
-EVALUATION_MODEL=inclusionai/ling-3.2-flash:free
-EVALUATION_CONCURRENCY=1
+GOOGLE_API_KEY=your_google_key
+GENERATION_PROVIDER=google
+GENERATION_MODEL=gemini-3.1-flash-lite
+
+EVALUATION_PROVIDER=google
+EVALUATION_MODEL=gemini-3.1-flash-lite
+EVALUATION_REASONING_EFFORT=minimal
+EVALUATION_CONCURRENCY=2
+EVALUATION_METRIC_TIMEOUT=360
+SYNTHETIC_ALLOW_SAME_MODEL_VERIFICATION=true
 ```
 
-Gemini 3.5 Flash Lite still drafts questions and generates answers with your
-Google credits. OpenRouter judging uses a dedicated key and endpoint, a fixed
-`:free` model ID, and zero-price provider constraints. Paid model IDs and random
-routers are rejected. Schema validation, source verification, deadlines, retry
-budgets, failure counts and the existing Ragas metrics remain in place. The same
-model through different provider aliases cannot verify its own question drafts.
+The current preset uses Gemini 3.1 Flash Lite for question drafting, answers,
+source-reference checks and Ragas scoring. Google API usage is billed to the
+configured key. Same-model source checking is explicitly labelled and is not
+independent verification. Set a different judge and disable the same-model flag
+when an independent comparison is needed. Cohere reranking is optional and uses
+`COHERE_API_KEY` with the settings in `.env.example`.
 
-Start with one question in Preview. Free routes have request/quota limits, and a
-full Ragas comparison can require multiple calls per metric/question/strategy.
-HTTP 429 is displayed as a rate/quota failure rather than retried repeatedly.
-Model names and package revisions are recorded with runs; catalog availability
-alone does not establish verdict accuracy or response speed.
+Optional OpenRouter generation/judging still requires fixed `:free` model IDs,
+zero-price routing and an explicitly configured `OPENROUTER_API_KEY`.
 
-The public OpenRouter catalog on 18 November 2026 lists
-`inclusionai/ling-3.2-flash:free` (Ant Digital) and
-`nvidia/nemotron-3.5-super-vl:free` (NVIDIA) at zero prompt/completion price, with
-structured-output support. They are candidates for a small source-verification
-and known-reference accuracy check. The free Gemma 4 31B route currently uses
-Google AI Studio, so it may share the direct Google service's availability issue.
-Confirm current model availability in <https://openrouter.ai/api/v1/models>.
-
-The configured Ling route completed a real one-question automatic Preview in
-265.362 seconds: 1.8074 seconds for the RAG answer and 186.1558 seconds for 13
-structured judge calls. All five applicable quality metrics had valid results
-and no failures. These are single-run timings, not a general speed/accuracy
-guarantee. NVIDIA passed two small source checks but truncated a faithfulness
-verdict during a larger five-metric comparison; Ling remains the selected judge.
-
-An earlier live report identified a citation parser bug: `p.`/`pp.` labels were
-ignored. That parser is fixed. The earlier report and its correction artifacts
-were removed with evaluation history during cleanup.
-Factual correctness remains reference-based F1; a sparse synthetic reference can
-penalize additional source-supported claims. Review question/reference completeness
-before using an automatic benchmark to make accuracy claims.
-
-The first upload still needs extraction and embedding work. Full evaluation still
-performs real model calls. Provider rate limits, document size, network latency,
-and judge configuration affect runtime; these changes do not establish a fixed
-response-time or accuracy guarantee.
-
-Defaults in `.env.example` include a 60-second generation deadline, 1024 output
-tokens, 12000 context characters, three visual assets with maximum dimension
-1280, and batches of 32 embeddings. Adjust output/context limits deliberately
-for more complex questions. Generation and evaluation have separate reasoning
-settings. The chosen Gemma model does not receive Gemini-specific thinking
-parameters; that optional setting only applies when explicitly choosing a
-supported Gemini 2.5 Flash model.
-
-The supplied PDF had 101 native-text pages, no scans or embedded images, and one
-ruled table. Its native inspection took about 16 seconds; lexical retrieval took
-less than a second. The old index contained 54 duplicate document contents among
-156 records. These measurements identify local work and index redundancy; precise
-attribution of a past 25-minute cloud response requires per-stage request logs.
-
-The final chunking fix retains distinct split passages: the rebuilt index has
-156 records and 155 distinct texts. A repeat preparation run took 0.008 seconds
-for cached extraction and 0.182 seconds for index reuse; the one-time rebuild
-took 53.655 seconds. These timings exclude model answer generation.
-
-## PDF extraction and OCR
-
-The default extraction pipeline requires **no Tesseract or Poppler installation**.
-It reads native PDF text/tables with pdfplumber, renders visual evidence with
-PDFium, and uses CPU RapidOCR for scanned pages. RapidOCR 3.10.0 ships the ONNX
-models used here, so OCR works locally without API keys or model downloads during
-extraction. The engine is loaded once and reused.
-
-Native ruled tables are extracted as escaped HTML. Scanned tables remain OCR text
-and page images; the default engine does not reconstruct their cell structure.
-Page previews preserve embedded images and detected vector graphics for the
-multimodal answer pipeline. Complex reading order and borderless/scanned tables
-still need validation on representative documents.
-
-## Setup
-
-1. Create and activate a virtual environment:
-   ```bash
-   python -m venv .venv
-   # Windows
-   .\.venv\Scripts\Activate.ps1
-   # macOS/Linux
-   source .venv/bin/activate
-   ```
-2. Install backend dependencies:
-   ```bash
-   python -m pip install -r requirements.txt
-   ```
-   Build the frontend once with Node.js 22 or newer:
-   ```powershell
-   cd frontend
-   npm ci
-   npm run build
-   cd ..
-   ```
-3. Create `.env` from `.env.example` if it does not exist. Preserve existing keys
-   when changing settings:
-   ```env
-   GOOGLE_API_KEY=your_gemini_api_key
-   COHERE_API_KEY=your_cohere_api_key
-   GENERATION_PROVIDER=google
-   GENERATION_MODEL=gemini-3.5-flash-lite
-   EVALUATION_PROVIDER=google
-   EVALUATION_MODEL=gemma-4-31b-it
-   ```
-
-   OCR defaults work without changes. Generation and judge evaluation require
-   valid provider credentials; document extraction does not. Cohere is optional
-   for production reranking. Keep keys in `.env` and restart after changes.
-
-To check OCR alone with a smaller dependency install:
+Start the app:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-ocr.txt
-.\.venv\Scripts\python.exe ocr_doctor.py --self-test
+.\.venv\Scripts\python.exe -B run_app.py
 ```
 
-To extract your own PDF and measure OCR against a verified transcription:
+Open the printed URL, normally **http://127.0.0.1:8501**. The launcher warms local
+search dependencies before accepting requests; startup can take time and makes
+no inference requests. Use `--port 8517` if the default port is occupied.
 
-```powershell
-.\.venv\Scripts\python.exe ocr_doctor.py --pdf "report.pdf" --reference "verified-text.txt" --output "test-results/report-ocr.json"
-```
+API keys belong only in the backend `.env`. Never add them to React, `VITE_*`
+variables, Git or screenshots. Restart Python after changing backend settings.
 
-The reference must correspond to the full extracted text in page order. Character
-and word error rates measure differences from that reference; OCR confidence does
-not measure accuracy. Error rates may exceed 1 when there are many insertions.
-The built-in self-test uses a clean synthetic English scan and does not establish
-accuracy for arbitrary uploaded PDFs.
+## Pages and workflow
 
-Use `OCR_DPI`, `OCR_THREADS`, `OCR_MIN_CONFIDENCE`, `OCR_MAX_PIXELS`,
-`PDF_MAX_PAGES`, and `PDF_MAX_FILE_MB` in `.env` to tune quality/resource limits.
-Defaults are 200 DPI, two inference threads, 0.5 minimum line confidence,
-12 million rendered pixels, 300 pages, and 50 MB per PDF.
+The sidebar separates the main evaluation workflow from exploration tools.
+The document selector in the header sets the document used by each page.
+Navigation uses browser URLs such as `#/evaluation`, so refresh and browser
+Back/Forward preserve the current page.
 
-## Optional Tesseract / high-resolution layout extraction
+| Page                      | What to do here                                                               |
+| ------------------------- | ----------------------------------------------------------------------------- |
+| **Documents**       | Upload PDFs, search your library, prepare files and select a document.        |
+| **Evaluation**      | Choose automatic or saved questions, configure the scope, and start a run.    |
+| **Results**         | Select a run, compare metrics, inspect its test questions and export records. |
+| **Ask document**    | Ask an individual question and read its cited answer and supporting evidence. |
+| **Source explorer** | Browse paginated original text, tables and visual evidence.                   |
+| **Retrieval lab**   | Test keyword/vector/hybrid search, fusion and optional model-assisted steps.  |
 
-For the older Unstructured layout pipeline, install `requirements-hires.txt`,
-Tesseract with English trained data, and Poppler. Then configure:
+To run an automatic evaluation:
 
-```env
-PDF_EXTRACTION_MODE=hi_res
-OCR_BACKEND=tesseract
-# Only needed when the installed executable is not discoverable:
-TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-```
+1. Upload a PDF on **Documents** and wait for preparation to finish.
+2. Open **Evaluation** and select **Generate automatically**.
+3. Choose 1–50 questions and an evaluation scope, then **Generate & evaluate**.
+4. Open **Results** to compare strategies and inspect source-backed references.
 
-Tesseract can also be used for scan text with `PDF_EXTRACTION_MODE=auto` and
-`OCR_BACKEND=tesseract`. High-resolution layout mode may download its separate
-layout/table models and has additional system dependencies. It is an explicit
-option rather than a silent fallback.
+Upload one to three PDFs in a single file selection or drag-and-drop. **Keep PDFs
+separate** prepares each original in one bounded background job; **Combine into
+one PDF workspace** creates a combined PDF while retaining the originals.
 
-## Model Configuration
-
-Answer generation uses `gemini-3.5-flash-lite` with minimal reasoning, following
-the latest request. The local judge is configured as OpenRouter
-`inclusionai/ling-3.2-flash:free`; Google `gemma-4-31b-it` remains supported.
-Generation and judge settings remain separately configurable. The Flash Lite integration omits custom
-sampling parameters that this model does not support.
-
-A live production answer on the supplied PDF completed in 7.149 seconds,
-including 4.685 seconds of generation, 0.309 seconds of local retrieval and
-2.155 seconds of Cohere reranking. The answer named all three measurement layers
-correctly and cited page 2. A fresh Python process took another 33.481 seconds to
-load local libraries and the saved embedding index before this request. This is
-one source-checked case, not a general latency or accuracy benchmark.
-
-The final browser test with the launcher displayed the correct answer in 19.844
-seconds, versus 119.355 seconds before provider-client pre-initialization. PDF
-preparation took 3.589 seconds. Its measured backend answer time was 12.308
-seconds, including 10.368 seconds of generation. Launcher startup took 31.23
-seconds for local search initialization plus 3.44 seconds for provider clients;
-it submitted no inference/reranking requests during startup. These are individual
-observations on one reviewed question; network and model latency may vary.
-
-The earlier Gemma browser request received a provider HTTP 503 after 66.181 seconds
-including retrieval/reranking. A separate one-case preview received HTTP 503
-after 11.525 seconds, before judging. Those runs established no successful Gemma
-answer or quality scores. Gemma judge availability remains unverified. The local
-retrieval profile completed its one-case, three-strategy
-browser check in 6.08 seconds. OCR uses its own local models.
-
-Optional local generation uses `GENERATION_PROVIDER=ollama`,
-`LOCAL_GENERATION_MODEL`, and `OLLAMA_BASE_URL`; its service/model must be
-installed separately. Local-model speed and quality require their own validation.
-
-## Running the Application
-
-- **React workspace and API:**
-  ```bash
-  python -B run_app.py
-  ```
-  Open `http://127.0.0.1:8501`. Use `--port 8517` if another app already uses 8501.
-- **Frontend development:** run the Python launcher on port 8501, then in a
-  second terminal run `cd frontend` and `npm run dev`. Vite proxies `/api` to the
-  backend; open the Vite URL. Frontend edits reload automatically; restart Python
-  for backend or `.env` changes. Rebuild React before using the production launcher.
-- **CLI Evaluation with a reviewed dataset:**
-  ```bash
-  python advanced_evaluation.py --db "db/chroma_your_index" --dataset "questions.json" --profile preview
-  ```
-
-The launcher loads the local search model, native dependencies, and configured
-provider clients once, before
-accepting browser sessions. This avoids the concurrent dependency initialization
-that stalled document preparation on the tested Windows environment. Wait for
-the printed app URL before opening the browser; fresh startup may take about
-30 seconds. Restart the launcher after changing code or `.env` settings.
-
-## Automatic evaluation
-
-Evaluation is the default workspace view. Upload and prepare a PDF, choose the
-number of questions (1–50), and select **Generate questions & evaluate**. No
-question entry or dataset import is required. The default full comparison tests
-keyword, vector, hybrid, and reranked retrieval against the same generated cases.
+On Evaluation, **PDF scope** offers the current workspace, **Each PDF separately**,
+or **Combined PDFs**. Choose two or three original PDFs for the multi-PDF options.
+Separate mode applies the question count to each PDF and saves a dataset/report
+per document. Combined mode applies the count to the whole collection and permits
+questions spanning original PDFs. Its passages retain original-file provenance,
+and source links open both combined page numbers and the corresponding original
+PDF pages. Generated-reference coverage and any unrepresented original PDF remain
+visible in the manifest/warnings. Batch errors stay associated with their PDF.
 
 The system samples indexed passages across the document, drafts questions and
-reference answers with the configured Gemini generator, checks supporting quotes
-against stable source chunks, and verifies each reference with the separately
-configured independent judge. Unsupported or duplicate drafts are rejected. If fewer
-cases pass verification than requested, the report states the shortfall; if none
-pass, evaluation does not start. Generated cases and their evidence are available
-for inspection and JSON download. Completed question sets and evaluation results
-are cached by source, models, and configuration.
+references, validates supporting quotes against stable chunks, and source-checks
+each reference before evaluating RAG answers. Unsupported or duplicate
+cases are rejected. If fewer cases pass than requested, the report shows the
+shortfall. If no cases pass, scoring does not start.
 
-Synthetic references are automatically checked, not human-reviewed ground truth.
-They cover extracted text and table text. Chart-only and unanswerable questions
-are not generated automatically; optional source-labelled imported cases can
-cover those scenarios. Cited chunk labels are not exhaustive relevance judgments,
-so alternate valid passages can lower retrieval scores. Calibration against a
-reviewed benchmark remains useful, but is not a prerequisite for automatic runs.
+Completed question sets and evaluation work are cached by document, models and
+configuration. **Models & cache settings** allows deliberate recomputation.
+Progress, cancellation and provider errors remain visible while a run executes.
 
-Reports include the four metrics in `project_docs/Metrics.png`: **faithfulness, answer
-relevancy, context precision, and context recall**, plus factual correctness.
-Retrieval reports include precision@k, recall@k, MRR, nDCG@k, hit rate and MAP@k.
-Structural citation checks, lexical diagnostics, stage timings, latency
-percentiles, and failure counts are reported separately. Each quality score has
-valid sample counts, missing/failed counts and confidence intervals when enough
-samples exist. Structural citation checks do not prove semantic citation support.
-Invalid values such as the screenshot's answer relevancy `5.001232` are excluded.
-There is no fabricated overall score or automatic declaration of a winner.
+## Restart recovery
 
-Automatic drafting and verification use API credits for every profile. The
-retrieval-only scoring phase is local; reusing an existing dataset for retrieval
-evaluation makes no model requests. Missing reranker configuration and reranker
-fallbacks remain explicit. Provider failures do not become fabricated scores.
+Job settings, progress and completed results persist in the local SQLite catalog.
+After a server restart, **Saved work** lists your interrupted operations, even
+if the browser has lost its tab storage. Select **Resume work** to retry using
+the saved question, retrieval options or evaluation scope. **Open progress**
+reconnects to work already running.
 
-Earlier automatic-evaluation validation passed 135 tests; the React build passed.
-Playwright/Edge verified desktop/mobile automatic submission, generated question
-inspection, metric tables, missing/failed scores, and the real provider-failure
-view. Successful report rendering also used explicitly labelled isolated fixtures;
-those scores were never saved as real evaluation results. A bounded one-question
-live run received Google 503 model-demand errors during drafting/verification and
-produced no verified dataset or quality scores. Subsequent OpenRouter live
-validation is described above; those live artifacts have since been cleared.
+Interrupted work is never started automatically. Evaluation retries reuse valid
+completed question sets, answers and metric caches, including when the original
+run requested recomputation. Repeated clicks return the same replacement job.
+Completed answers/reports committed just before shutdown are restored without
+making new model requests. Unfinished provider requests may need to run again
+and use API credits; incomplete streamed text remains labelled as incomplete.
 
-A follow-up check on 17 November confirmed that the existing Google key can
-retrieve metadata for `gemma-4-31b-it`, which advertises `generateContent`.
-After fixing the hidden 45-second timeout cap and adding bounded retries, a real
-handbook source-verification request still received HTTP 503/high demand on both
-attempts, finishing in 20.567 seconds. Model visibility and credentials were
-confirmed; successful inference and end-to-end automatic scores remain unverified.
+Explicitly cancelled jobs stay cancelled. Older records without saved operation
+settings remain readable; start those operations again from their page. Recovery
+currently supports one application process on the local computer. Coordination
+between multiple workers remains future work.
 
-## Optional imported datasets and profiles
+## Account sign-in
 
-Evaluation uses a dataset linked to the uploaded PDF, generated automatically or
-optionally imported. The previous six hardcoded questions are not reused for
-unrelated documents. For an existing reviewed benchmark, import JSON or CSV
-through the app or CLI. JSON structure:
+`APP_AUTH_MODE=local` keeps the existing local browser workspace. To use private
+accounts, register an OpenID Connect application with your identity provider and
+set these backend environment variables:
 
-```json
-{
-  "document_hash": "replace_with_the_PDF_SHA256",
-  "questions": [
-    {
-      "id": "q1",
-      "question": "Your question about this document",
-      "reference_answer": "An answer verified against the original PDF",
-      "answerable": true,
-      "reference_pages": [1],
-      "relevant_chunk_ids": []
-    },
-    {
-      "id": "q2",
-      "question": "A question the document cannot answer",
-      "reference_answer": "The document does not provide this information.",
-      "answerable": false,
-      "reference_pages": [],
-      "relevant_chunk_ids": []
-    }
-  ]
-}
+```dotenv
+APP_AUTH_MODE=oidc
+APP_BASE_URL=https://rag.example.com
+OIDC_ISSUER=https://your-provider.example.com
+OIDC_CLIENT_ID=your_registered_client_id
+OIDC_CLIENT_SECRET=your_client_secret
 ```
 
-Replace the hash with the full SHA-256 of the PDF. Answerable cases need verified
-evidence pages or relevant chunk IDs. CSV uses corresponding column names,
-repeats the document hash, and stores lists as JSON or semicolon-separated values.
+Register the exact redirect URI `APP_BASE_URL/api/auth/callback` with the provider,
+using the actual origin in place of `APP_BASE_URL`, then restart Python. The issuer
+must match discovery metadata exactly. HTTPS is required for public URLs; HTTP
+on localhost/127.0.0.1 is supported for development. Configure the reverse proxy
+to serve React and `/api` from that one origin. This adds no hosting service.
 
-| Profile | Work performed | Interpretation |
-| --- | --- | --- |
-| `preview` | Up to five selected questions through production retrieval, judged with the four screenshot metrics plus factual correctness | A smaller labelled preview, not a replacement for full evaluation |
-| `full` | All questions across keyword, vector, hybrid, and reranked retrieval, with five configured Ragas metrics | Complete comparison for this dataset and configuration |
-| `retrieval` | Local keyword/vector/hybrid retrieval and evidence-label metrics; no answer generation, judge, or API reranker | Measures retrieval only, not answer faithfulness/correctness |
+The default provider configuration uses authorization-code login, PKCE S256,
+RS256 signatures and `client_secret_basic` token authentication. Providers can
+instead use `OIDC_SIGNING_ALGORITHM=ES256` or
+`OIDC_TOKEN_AUTH_METHOD=client_secret_post`. A registered public PKCE client can
+use `OIDC_TOKEN_AUTH_METHOD=none` without a client secret. Configure the matching
+settings on the provider. Discovery and JWKS must be reachable by the backend.
 
-Visual evidence and unanswerable questions use applicable metrics. Missing labels,
-provider failures, skipped metrics, and valid sample counts are explicit. Lexical
-token overlap is not presented as factual correctness. Independently configured
-judges and human review remain necessary to assess evaluation quality.
+The browser receives an HttpOnly cookie; identity/access tokens and client secrets
+remain off the frontend. Sessions persist across restarts, expire after eight
+hours by default (`AUTH_SESSION_SECONDS`, 300–86400), and are revoked on sign-out.
+Sign-out ends this app's session; the provider may retain its own login session.
+Accounts are keyed by verified issuer and subject, so changing a display name or
+email retains the same library. Document, answer, dataset, job and export routes
+require the signed-in owner. Browser caches and remembered jobs reset when
+switching accounts. The server also stops progress streams after session expiry
+or revocation. Missing/invalid OIDC configuration prevents startup rather than
+opening an anonymous workspace.
+
+Existing local documents and results stay on disk and remain assigned to their
+local workspace. OIDC login does not automatically claim them. Use local mode to
+access existing work; upload the original PDFs into a new account when needed.
+Do not switch a public deployment back to local mode. Account support is tested
+with signed offline provider fixtures; live provider setup, TLS deployment,
+shared workers and production backup/load checks remain release work.
+
+## Evaluation scopes
+
+| Scope                     | Work performed                                                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Full comparison** | Every selected question across Keyword, Vector, Hybrid and Reranking, with answer-quality and retrieval metrics.                                        |
+| **Quality preview** | A deterministic subset through the production retrieval/generation pipeline; five cases by default, configurable with `EVALUATION_PREVIEW_QUESTIONS`. |
+| **Retrieval only**  | Local Keyword, Vector and Hybrid evidence selection, without RAG answers or quality judging.                                                            |
+
+Automatic drafting and source verification use model APIs even for retrieval-only
+runs. Reusing a saved dataset for retrieval-only scoring makes no model requests.
+Full comparisons can require many judge calls per question and strategy; free
+provider quotas can be exhausted before all metrics finish. Start with a small
+preview to confirm model availability. HTTP 429/503/504 errors are provider
+failures, not evidence of poor retrieval or answer quality.
+
+Missing reranker configuration and reranker fallback remain explicit in reports.
+No paid judge is silently substituted for a configured free OpenRouter model.
+Only fixed `:free` model IDs with zero-price routing are accepted on that path.
+
+## Reading results
+
+**Results** displays one selected run at a time, with separate report sections
+for answer quality, retrieval, citations/diagnostics, latency, test questions and
+run configuration. Exports include summary CSV, sample JSONL and the run manifest.
+
+| Answer-quality metric         | What it measures                                                     |
+| ----------------------------- | -------------------------------------------------------------------- |
+| **Faithfulness**        | Support for answer claims in the evidence supplied to the generator. |
+| **Answer relevancy**    | How closely the response addresses the test question.                |
+| **Context precision**   | How much of the selected evidence is useful for answering.           |
+| **Context recall**      | Coverage of reference information by the selected evidence.          |
+| **Factual correctness** | Claim agreement with the source-verified reference, using F1.        |
+
+Additional metrics include precision@k, recall@k, MRR, nDCG@k, hit rate and MAP@k;
+structural citation checks; exact match/token F1; applicable abstention and visual
+checks; stage latency percentiles; and failure counts.
+
+Every metric displays its valid sample count and any failures or skipped/N/A
+cases. Confidence intervals can be expanded where available. **An unavailable
+score is not zero.** Invalid values are excluded, and no fabricated overall
+score or automatic winner is reported.
+
+Provider-blocked cases have their own label. A visible provider notice gives the
+recorded rejection and reset time, when supplied. Expand **Why metric attempts
+failed** to inspect each affected strategy, question, metric and cause. Strategy
+scheduling alternates across the comparison; complete multi-request Ragas metrics
+have a separate deadline from individual provider requests. Completed structured
+judging steps are cached so later failures do not force those steps to repeat.
+
+Generated references are automatically checked, not human-reviewed ground truth.
+They cover extracted text and table text; chart-only and unanswerable cases are
+not generated automatically. References and relevance labels can be incomplete,
+so source-supported extra claims or alternate valid passages may reduce some
+scores. Inspect the questions and calibrate against reviewed cases before making
+broad accuracy claims. Citation structure and wording overlap do not prove
+semantic support.
+
+To reuse or import questions, choose **Use saved questions** on Evaluation.
+JSON/CSV cases must match the PDF SHA-256 and contain a question, reference answer,
+answerability and evidence pages or relevant chunk IDs. Download the document’s
+import template from that page; inspect and export test sets from Results.
+
+CLI evaluation is also available:
 
 ```powershell
-.\.venv\Scripts\python.exe advanced_evaluation.py --db "db/chroma_your_index" --dataset "questions.json" --profile full
-.\.venv\Scripts\python.exe advanced_evaluation.py --db "db/chroma_your_index" --dataset "questions.json" --profile retrieval
+.\.venv\Scripts\python.exe -B advanced_evaluation.py --db "db/chroma_your_index" --dataset "questions.json" --profile full
 ```
 
-Per-question outputs, manifests, timings, score denominators, and reusable caches
-live in `evaluation_runs/`. Use `--force` for a deliberate new run rather than
-reusing completed cached work. Cancellation is cooperative; an in-flight provider
-request may last until its deadline.
+## OCR and performance
 
-## Run with no hosting subscription
+PDF extraction reads native text/tables with pdfplumber, renders visual evidence
+with PDFium, and uses CPU RapidOCR on scans. Its ONNX models ship with the wheel.
+Scanned tables remain OCR text and images; cell reconstruction and complex chart
+understanding require separate validation. Optional Tesseract/Unstructured layout
+extraction is documented by `requirements-hires.txt` and the settings in
+`.env.example`.
 
-Run on your existing computer, directly or with Docker Desktop using Linux
-containers. This adds no server subscription. Model API usage is separate, and
-your computer still needs to remain powered and connected.
+Check OCR without making model API calls:
+
+```powershell
+.\.venv\Scripts\python.exe -B ocr_doctor.py --self-test
+```
+
+Use `--pdf`, `--reference` and `--output` to measure character/word error rates
+against a verified transcription. OCR confidence is not an accuracy measurement.
+
+Document extraction, embeddings and indexes are reused across questions. Model
+clients are warmed once; answers stream and evaluation uses bounded concurrency,
+timeouts and reusable caches. Source, report and exploration views load on demand.
+Document size, model availability and provider quotas still affect response time.
+
+## Development and checks
+
+Run the Python launcher on port 8501, then start Vite in a second terminal:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+Open the Vite URL. `/api` requests proxy to Python; frontend changes reload
+immediately. Rebuild with `npm run build` before using the production launcher.
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -B -m pytest tests -q -p no:cacheprovider
+cd frontend
+npm run build
+```
+
+Backend regression tests are offline; live provider availability and judge
+calibration need separate checks. The restart-recovery milestone includes tests
+for server shutdown, schema migration, ownership, concurrent retries and completed
+artifact recovery, plus desktop/mobile browser checks using offline fixtures.
+Live identity-provider setup, coordination between workers and Linux container
+execution remain release work.
+
+## Container deployment
+
+Docker Desktop with Linux containers can run the app on your existing computer
+without a hosting subscription. Model usage, electricity and connectivity are
+separate costs.
 
 ```powershell
 docker compose up --build
 ```
 
-Open `http://localhost:8501`. Compose binds the service to localhost and preserves
-documents, indexes, extraction caches, and evaluation results in named volumes.
-The image runs as a non-root user, installs CPU PyTorch, and preloads the pinned
-MiniLM embedding model during build. RapidOCR's models ship in its wheel. Secrets
-and existing documents/indexes are excluded from the image.
+Open **http://localhost:8501**. Compose binds to localhost and persists documents,
+indexes, extraction caches and evaluation results in named volumes. The image
+builds React, serves it with FastAPI, preloads the pinned local embedding model,
+runs as a non-root user and checks `/api/health`. `.env` and local uploaded data
+are excluded from the image. Initial package/model downloads can take time.
 
-The container builds React in a Node stage, serves its static files and API from
-one Python process, and checks `/api/health`. Production does not run a frontend
-development server. Rebuild after changes to packaged code.
+The default cookie identifies a **local workspace**. Keep the localhost binding.
+Public deployment requires OIDC account configuration, shared worker/storage
+coordination, TLS and a hosting option validated for this workload.
 
-The preloaded embedding revision is fixed in `Dockerfile`. Rebuild the image and
-provide matching model assets if changing its embedding model/revision; the
-default container disables Hugging Face downloads at runtime.
+## Project layout
 
-The initial image build downloads packages and model assets and may take time.
-The default image uses native/RapidOCR extraction; optional Tesseract high-res
-mode requires extending its system dependencies.
-
-Browser workspaces use an HTTP-only same-origin cookie and ownership checks.
-They are local workspaces, not authenticated public accounts. Keep the localhost
-binding for this version. Public accounts are not implemented yet. Publishing requires an access/auth
-decision and a hosting option with appropriate durable storage. Free hosted
-platforms may impose sleep, persistence, or resource limits; a zero-price public
-production service has not been established. Completed artifacts persist in
-volumes; in-memory jobs are not guaranteed to resume after restart.
-
-## Validation and project status
-
-After the 18 November cleanup, all 174 backend tests and the React production
-build passed. Temporary test data was removed; the app remains stopped with
-no uploaded PDFs or runtime databases.
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest tests -q
-python ocr_doctor.py --self-test --output test-results/ocr-smoke.json
-docker compose config --quiet
+```text
+frontend/src/       React pages, navigation and shared UI components
+api/                FastAPI routes, ownership, jobs and catalog persistence
+*_runtime.py        OCR, indexing, retrieval, generation and judge services
+advanced_evaluation.py       Ragas scoring and report generation
+evaluation_generation.py    Source-verified automatic question generation
+tests/              Backend regression tests
+project_docs/       Original metric images and evaluation handbook DOCX
+HANDOFF.md          Current state and continuation notes
+PROJECT_PLAN.md     Roadmap and release acceptance checks
 ```
 
-Browser tests use Playwright; install its browser assets with
-`python -m playwright install chromium` when needed. Paid provider checks are
-separate from deterministic offline tests. Direct runtime package versions are
-pinned to the locally inspected environment; complete cross-platform transitive
-locking and Linux image execution still need release validation.
-
-Public accounts and deployment hardening remain tracked in
-[PROJECT_PLAN.md](PROJECT_PLAN.md).
-
-## React architecture and data compatibility
-
-React and FastAPI are the maintained interface. The retired Streamlit interface,
-its pages, launcher and optional dependency manifest were removed. The Python
-RAG/OCR/evaluation services and their tests remain. Frontend dependency/build
-output is excluded from Git and Docker. Historical measurements in this README
-describe earlier checks; their PDF/index/result artifacts were cleared during
-cleanup and are not bundled benchmarks.
-
-`frontend/src` contains the typed React views. Evaluation, retrieval and source
-views load on demand; SWR deduplicates reads and SSE streams job progress and
-partial answers. If streaming disconnects, the browser falls back to polling.
-Navigation and browser refresh retain job IDs in session storage.
-
-`api/main.py` owns HTTP validation and document ownership; `api/runtime.py`
-adapts bounded background jobs and native results into browser-safe JSON.
-`api/storage.py` persists catalog metadata, reviewed datasets, answer history,
-and run references in `db/web_catalog.sqlite3`. PDF files, extraction caches,
-stable chunk IDs, Chroma indexes, and evaluation artifacts retain their existing
-formats. The first local workspace adopts legacy hash-named PDFs and matching
-run history. Reuploading an existing document reuses its catalog entry and index.
-
-Keep `.env` in the Python project root. React has no API-key input or secret
-build variables. Model credentials are consumed only by Python. Asset/download
-routes require workspace ownership and never accept arbitrary filesystem paths.
-The queue allows four outstanding jobs globally and two per workspace, with two
-worker threads. Cancellation is cooperative. Completed data survives restarts;
-in-flight jobs do not resume automatically. Clearing the browser cookie creates
-a new workspace, so retain it to access your existing library.
-
-The retrieval lab supports keyword/vector/weighted hybrid search, manual or
-generated query variations, reciprocal rank fusion, optional reranking, and an
-optional grounded answer. Default lab search and the retrieval-only evaluation
-profile make no model API calls. Preview/full evaluation preserves the configured
-judge and actual score denominators, missing metrics, warnings, and exports.
-
-Migration validation: 84 backend tests passed; the production React build and
-Compose configuration passed. Playwright with installed Edge checked desktop
-(1440×1000) and mobile (390×844), document reuse, source pagination, local
-retrieval, wrong-PDF dataset rejection, evaluation/downloads, cancellation, and
-answer history after browser refresh and server restart. No unexpected browser
-errors remained; the deliberately invalid dataset returned the expected 422.
-
-On the reviewed handbook question, the React answer became visible in 7.598
-seconds (7.410 seconds in the backend, including 6.754 seconds of generation)
-and correctly named the three layers with page 2 evidence. A fresh one-question
-retrieval-only evaluation completed visibly in 1.210 seconds; cached evaluation
-took 0.526 seconds. A small synthetic text/table/chart PDF prepared in 0.557
-seconds and a clean English scan in 2.006 seconds. These are individual smoke
-checks, not general speed or OCR-accuracy guarantees. Full paid Gemma judging
-was not repeated during migration. Docker Desktop's engine was stopped, so the
-updated Linux image has not been built or run locally.
+Runtime data is created as needed in `docs/`, `db/`, `.cache/`,
+`evaluation_datasets/` and `evaluation_runs/`; it is excluded from Git. Existing
+local documents and evaluation history are retained. Disposable QA output and
+generated build metadata can be removed without deleting saved work. The retired
+Streamlit interface has been removed.

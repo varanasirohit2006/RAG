@@ -15,6 +15,10 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage
 
 DEFAULT_GENERATION_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_OPENROUTER_GENERATION_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+# Confirmed image-input models in OpenRouter's model catalog. Unknown routes use text.
+OPENROUTER_IMAGE_MODELS = {"nvidia/nemotron-3.5-super-vl:free",
+                          "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"}
 
 
 class GenerationError(RuntimeError):
@@ -27,8 +31,8 @@ class GenerationError(RuntimeError):
 
 def resolve_provider(provider=None):
     value = (provider or os.getenv("GENERATION_PROVIDER", "google")).strip().lower()
-    if value not in {"google", "ollama", "extractive"}:
-        raise ValueError("GENERATION_PROVIDER must be google, ollama, or extractive.")
+    if value not in {"google", "openrouter", "ollama", "extractive"}:
+        raise ValueError("GENERATION_PROVIDER must be google, openrouter, ollama, or extractive.")
     return value
 
 
@@ -45,11 +49,45 @@ def model_name_for(provider=None, model_name=None):
         return model_name
     if provider == "ollama":
         return os.getenv("LOCAL_GENERATION_MODEL", "gemma3:4b")
+    if provider == "openrouter":
+        return os.getenv("GENERATION_MODEL", DEFAULT_OPENROUTER_GENERATION_MODEL)
     return os.getenv("GENERATION_MODEL", DEFAULT_GENERATION_MODEL)
+
+
+def create_openrouter_generation_model(model_name, timeout, max_tokens, *, asynchronous=False):
+    """Use only a named free route, with no paid fallback or Google credentials."""
+    if not re.fullmatch(r"[\w.-]+/[\w.:-]+:free", model_name) or model_name.startswith("openrouter/"):
+        raise ValueError("OpenRouter generation requires a fixed model ID ending in :free; paid models and random routers are disabled.")
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY is required for OpenRouter generation.")
+    from langchain_openai import ChatOpenAI
+
+    kwargs = {
+        "model": model_name, "api_key": api_key, "base_url": "https://openrouter.ai/api/v1",
+        "temperature": 0, "timeout": timeout, "max_retries": 0, "max_tokens": max_tokens,
+        "use_responses_api": False,
+        "extra_body": {"provider": {"max_price": {"prompt": 0, "completion": 0}},
+                       "reasoning": {"enabled": False}},
+    }
+    if asynchronous:
+        import httpx
+        # Each automatic-generation job has its own event loop and transport.
+        kwargs["http_async_client"] = httpx.AsyncClient(timeout=timeout)
+    return ChatOpenAI(**kwargs)
+
+
+def generation_supports_images(provider=None, model_name=None):
+    provider = resolve_provider(provider)
+    if provider == "openrouter":
+        return model_name_for(provider, model_name) in OPENROUTER_IMAGE_MODELS
+    return provider in {"google", "ollama"}
 
 
 @lru_cache(maxsize=8)
 def _build_model(provider, model_name, timeout, max_output_tokens, thinking_budget, base_url):
+    if provider == "openrouter":
+        return create_openrouter_generation_model(model_name, timeout, max_output_tokens)
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -59,10 +97,11 @@ def _build_model(provider, model_name, timeout, max_output_tokens, thinking_budg
             "max_retries": 1, "max_output_tokens": max_output_tokens,
         }
         normalized_model = model_name.lower().rsplit("/", 1)[-1]
-        if normalized_model == "gemini-3.5-flash-lite":
+        if normalized_model in {"gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-flash-lite-preview"}:
             # None suppresses the integration's default temperature=0.7 so the
             # API request contains no custom sampling value for this model.
-            kwargs["temperature"] = None
+            if normalized_model == 'gemini-3.5-flash-lite':
+                kwargs["temperature"] = None
             kwargs["reasoning_effort"] = "minimal"
             kwargs["include_thoughts"] = False
         if model_name.startswith("gemini-2.5-flash") and "thinking_budget" in ChatGoogleGenerativeAI.model_fields:
@@ -157,7 +196,7 @@ def _resized_jpeg(data):
             return base64.b64encode(output.getvalue()).decode("ascii")
 
 
-def prepare_generation_context(chunks, query, *, provider=None):
+def prepare_generation_context(chunks, query, *, provider=None, model_name=None):
     """Expose the exact bounded evidence sent to the generator for evaluation."""
     provider = resolve_provider(provider)
     if not query or not query.strip():
@@ -169,6 +208,8 @@ def prepare_generation_context(chunks, query, *, provider=None):
     if not 0 <= max_images <= 10:
         raise ValueError("GENERATION_MAX_IMAGES must be between 0 and 10.")
     contexts, chunk_ids, image_paths, images_base64, image_sources = [], [], [], [], []
+    supports_images = generation_supports_images(provider, model_name)
+    visual_evidence_omitted = False
     remaining = max_context
     for rank, document in enumerate(chunks, 1):
         if remaining <= 0:
@@ -176,6 +217,8 @@ def prepare_generation_context(chunks, query, *, provider=None):
         payload = document_payload(document)
         source = document.metadata.get("source") or document.metadata.get("filename") or "document"
         header = f"[Source {rank}; {source}; pages {_pages(document)}]"
+        if document.metadata.get('source_pages'):
+            header = f"[Source {rank}; Combined PDF; combined pages {_pages(document)}]"
         raw_text = str(payload["raw_text"] or "")
         table_text = "\n".join(str(table) for table in payload["tables_html"])
         evidence = raw_text + ("\nTABLE STRUCTURE:\n" + table_text if table_text else "")
@@ -183,7 +226,8 @@ def prepare_generation_context(chunks, query, *, provider=None):
         contexts.append(block)
         chunk_ids.append(document_key(document))
         remaining -= len(block)
-        if provider == "extractive":
+        if not supports_images:
+            visual_evidence_omitted |= bool(payload["image_paths"] or payload["images_base64"])
             continue
         # Load only selected visual assets, never all corpus images at query time.
         for image_path in payload["image_paths"]:
@@ -222,6 +266,10 @@ def prepare_generation_context(chunks, query, *, provider=None):
         prompt += "\n\nVISUAL SOURCE MAP:\n" + "\n".join(
             f"Image {number}: {source}" for number, source in enumerate(image_sources, 1)
         )
+    if visual_evidence_omitted:
+        prompt += "\n\nThis model receives extracted text and tables only. Images are not supplied; do not infer facts available only in a chart or image."
+    if any(document.metadata.get('source_pages') for document in chunks):
+        prompt += '\n\nUse the displayed combined-PDF page numbers in citations. The source viewer maps them to the original PDF pages.'
     message_content = [{"type": "text", "text": prompt}]
     message_content.extend({
         "type": "image_url",
@@ -232,6 +280,7 @@ def prepare_generation_context(chunks, query, *, provider=None):
         "chunk_ids": chunk_ids, "image_paths": image_paths,
         "images_base64": images_base64,
         "image_sources": image_sources,
+        "visual_evidence_omitted": visual_evidence_omitted,
         "messages": [HumanMessage(content=message_content)],
     }
 
@@ -261,14 +310,19 @@ def generate_final_answer(chunks, query, *, provider=None, model_name=None,
         if token_callback:
             token_callback(answer)
         return answer
-    prepared = prepare_generation_context(chunks, query, provider=provider)
+    prepared = prepare_generation_context(chunks, query, provider=provider, model_name=model_name)
     if not prepared["text_contexts"] and not prepared["images_base64"]:
         return "The document evidence does not support an answer to this question."
     if progress_callback:
+        if prepared["visual_evidence_omitted"]:
+            progress_callback(0, 1, "Using extracted text and tables; this model cannot inspect images")
         progress_callback(0, 1, f"Generating with {model_name_for(provider, model_name)}...")
     model = get_generation_model(model_name, provider=provider)
     finish_reason = ""
     try:
+        if provider == 'openrouter':
+            from provider_limits import ensure_openrouter_available
+            ensure_openrouter_available()
         if token_callback:
             started = time.perf_counter()
             limit = _positive_int("MODEL_TIMEOUT_SECONDS", 60, 300)
@@ -295,7 +349,10 @@ def generate_final_answer(chunks, query, *, provider=None, model_name=None,
     except GenerationError:
         raise
     except Exception as exc:
-        code = getattr(exc, "code", None)
+        code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+        if provider == 'openrouter' and code == 429:
+            from provider_limits import limit_message, record_openrouter_limit
+            raise GenerationError('openrouter generation blocked (HTTP 429): ' + limit_message(record_openrouter_limit(exc))) from exc
         label = f"{type(exc).__name__}" + (f", code {code}" if code else "")
         raise GenerationError(
             f"{provider} generation failed ({label}). Check the model/provider status "

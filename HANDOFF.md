@@ -1,86 +1,105 @@
 # Project handoff
 
-Last updated: 18 November 2026, after repository and uploaded-data cleanup.
+Updated: 19 November 2026.
 
-## Latest user request
+## Current work
 
-Leave the provider/quota issue for now. Clean the workspace so only the project
-folder remains, including removal of PDFs and databases. Do not resume quota
-feature work unless requested.
+The user requested removal of unnecessary project files and publication of the
+pending project changes to GitHub. Disposable browser QA output is removed;
+historical handoff/roadmap notes are condensed. Preserve application sources,
+tests, deployment configuration, reference documents and existing local data.
+The maintained app is React/TypeScript with FastAPI. Streamlit is retired.
 
-## Current state
+## Start and validate
 
-- The workspace contains only `RAG/`; useful reference materials are in
-  `project_docs/` (`Metrics.png`, `MultiQuery_vector.png`, and the handbook DOCX).
-- Removed uploaded PDFs, Chroma/SQLite databases, extraction caches, evaluation
-  datasets/results/history, temporary QA scripts/screenshots, pytest output and
-  bytecode caches. A fresh document upload and preparation are required.
-- Removed the retired Streamlit interface: `app.py`, `pages/`, `.streamlit/`,
-  `run_streamlit.py`, and `requirements-streamlit.txt`.
-- Preserved React/TypeScript, FastAPI, Python RAG/OCR/evaluation services, tests,
-  deployment configuration, `.git`, `.env`, `.venv`, and frontend dependencies.
-- The app is stopped. Runtime storage directories recreate automatically when
-  the application is used. Do not start it solely to verify this clean data state.
-- Existing uncommitted changes are preserved; do not reset the repository.
-
-## Run and configuration
-
-From `RAG/`:
+From this directory:
 
 ```powershell
 .\.venv\Scripts\python.exe -B run_app.py
 ```
 
-Open the printed URL (default `http://127.0.0.1:8501`). Local model initialization
-can take time; startup makes no inference requests. Upload and prepare a PDF,
-then use **Generate questions & evaluate** in the Evaluation view.
-
-Rebuild after frontend changes:
+The default URL is http://127.0.0.1:8501. Startup warms local search dependencies
+without making model inference requests. The main server was stopped at the last
+health check; temporary browser fixture servers were stopped after validation.
 
 ```powershell
+.\.venv\Scripts\python.exe -B -m pytest tests -q -p no:cacheprovider
 cd frontend
 npm run build
-cd ..
 ```
 
-Keys remain only in `RAG/.env`. Never print them or copy them into frontend code,
-Git, logs, screenshots or handoff notes. The current generator/drafter is Google
-`gemini-3.5-flash-lite`; verification and Ragas judging use OpenRouter
-`inclusionai/ling-3.2-flash:free`, with `EVALUATION_CONCURRENCY=1`.
+Cleanup/publication verification passed all **249 tests** in 108.31 seconds
+with five existing dependency warnings; the production React build passed.
+The earlier final authentication suite passed 32 tests. Offline Edge desktop/mobile
+flows passed, including login/logout, account isolation, expiry, saved-work
+recovery and multi-PDF evaluation. No paid model calls ran for those checks.
+Windows sandbox restrictions may require approval for the test temporary
+directory and frontend dependency resolution. Existing dependency warnings
+are documented by the test output; offline tests do not calibrate model quality.
 
-## Evaluation behavior and provider issue
+## Configuration and data
 
-The system generates source-linked questions and references, validates quoted
-source evidence, and uses an independent judge to verify references before
-scoring. Manual dataset import is optional. Full comparison evaluates Keyword,
-Vector, Hybrid and Reranking against identical cases.
+- Keep the backend `.env` and existing credentials private. Never print secrets,
+  put them in React/VITE variables, stage them in Git or bake them into images.
+- The current user-selected generator, question drafter, source verifier and judge
+  use Google `gemini-3.1-flash-lite`. Same-model verification is deliberately
+  labelled as non-independent. Evaluation concurrency is two; individual judge
+  requests have 90-second timeouts and complete metrics have 360-second deadlines.
+- Existing PDFs, indexes, extraction caches, datasets and results are in `docs/`,
+  `db/`, `.cache/`, `evaluation_datasets/` and `evaluation_runs/`. Preserve them.
+  These directories, `.env`, installed dependencies and build output are ignored.
+- The parent workspace also contains the user's original CSV/manifest exports
+  and `RESULTS_REVIEW.md`. Preserve those user files outside the Git repository.
+  The review verified provenance and aggregate arithmetic, but the run was partial:
+  only four of 24 samples and 31 of 120 answer-quality scores completed. Retrieval
+  covered all six questions per strategy; incomplete quality scores cannot fairly
+  rank strategies. Provider 429/503 errors do not establish missing billing.
+- `project_docs/` contains the original metric images and evaluation handbook;
+  these are useful project references. Keep `.venv` and frontend dependencies
+  available for local development. Keep the production frontend build for startup.
 
-Report faithfulness, answer relevancy, context precision, context recall and
-factual correctness, plus retrieval/citation diagnostics, timing and explicit
-valid/failed/skipped counts. Never fabricate missing scores or infer retrieval
-quality from provider errors. Synthetic references are not human ground truth.
+## Implemented behavior
 
-The user's mostly empty answer-quality comparison was traced to OpenRouter's
-free-route request quota: 110 judge requests, 16 responses and 94 HTTP 429
-rejections. The quota work was canceled before implementation. Large Ragas runs
-can require multiple calls per metric, question and strategy. Earlier Google
-Gemma verification also encountered provider 503/504 errors.
+Automatic evaluation drafts source-linked questions, validates exact supporting
+quotes and checks references before scoring through the production RAG pipeline.
+Reports retain real per-sample evidence, valid/failed/skipped counts, provider
+errors and latency. Missing scores remain unavailable. No automatic overall
+winner is invented. Structured judging steps and completed answers are cached;
+strategy scheduling alternates to reduce provider-quota bias.
 
-Existing useful fixes remain: bounded timeouts/retries and JSON validation,
-separate judge HTTP-client lifetimes, provider-key redaction, and page-citation
-parsing for `p.`/`pp.`. Previous live reports and correction backups were cleared
-as requested; historical timings in README describe earlier checks.
+One-to-three-PDF upload supports separate preparation or one combined workspace.
+Batch evaluation saves a dataset/report per original or one combined report.
+Combined chunks preserve original-file boundaries, page provenance and source
+coverage; source links show combined and original pages. Batch inputs persist
+and use the explicit restart-recovery path. Ownership checks cover all files.
 
-## Verification and remaining work
+The durable SQLite catalog records job settings, progress and completed results.
+Startup/shutdown mark interrupted work for explicit retry. Duplicate retries share
+one replacement job; completed artifacts and valid caches are reused. Cancelled
+jobs remain cancelled. Recovery currently supports one application process;
+unfinished provider requests may need to run again and use credits.
 
-Post-cleanup verification: all 174 backend tests passed in 69.08 seconds
-(five existing third-party warnings); the React production build passed.
-Temporary test data was removed afterward. No live model requests were needed.
-`git diff --check` passed. The app remains stopped with no uploaded PDFs or
-runtime databases in the project.
+OIDC authorization-code login uses PKCE S256, browser-bound one-use state, nonce
+and verified issuer/subject identities. RS256/ES256 signatures, audience,
+authorized party and timestamps are checked; trusted JWKS keys refresh on
+rotation. Opaque session cookies are HttpOnly; only their hashes are stored.
+Sessions persist across restart, expire and revoke on logout. Progress streams
+stop after expiry/revocation. Accounts retain their IDs across name/email changes.
+Private documents, answers, datasets, jobs, retries, assets and exports require
+the verified owner. React caches and remembered jobs reset on account changes.
 
-Public authentication/accounts, durable in-flight job recovery, Linux container
-execution, representative complex scan/chart validation and judge calibration
-remain future work. Browser cookies currently identify local workspaces;
-keep the localhost deployment default. Zero hosting subscription is the user's
-constraint; API usage is separate.
+`APP_AUTH_MODE=local` remains the default. OIDC requires provider registration,
+`APP_BASE_URL`, `OIDC_ISSUER`, `OIDC_CLIENT_ID` and a suitable token authentication
+method/secret. Register the exact `APP_BASE_URL/api/auth/callback` redirect URI.
+See README and `.env.example`. Invalid OIDC configuration stops startup.
+Public URLs require HTTPS; loopback HTTP is supported for development.
+Existing local resources are not automatically assigned to the first account.
+No live identity-provider configuration was supplied, and `.env` was not changed.
+
+## Remaining release work
+
+Follow `PROJECT_PLAN.md`: live OIDC/TLS setup, shared-worker coordination,
+per-account usage/spend limits, Linux container execution and dependency locking,
+load/backup/deletion validation, and reviewed scan/chart/judge calibration.
+The hosting constraint is zero subscription cost; API usage is separate. Keep
+localhost deployment defaults until the public release requirements are met.

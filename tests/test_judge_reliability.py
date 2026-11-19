@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from evaluation_judge import JudgeSettings, RagasJudge, create_gemma_json_llm, provider_status_code
+from evaluation_judge import JudgeSettings, RagasJudge, create_gemma_json_llm, create_google_json_llm, create_json_judge_llm, provider_status_code
 
 
 class Verdict(BaseModel):
@@ -67,6 +67,29 @@ def test_openai_compatible_client_honors_configured_timeout(monkeypatch):
     RagasJudge(JudgeSettings(provider="openai", model="test-judge", timeout=120)).prepare()
     assert calls[0]["timeout"] == 120
     assert calls[0]["max_retries"] == 0
+
+
+def test_gemini_31_uses_google_json_client_and_minimal_reasoning(monkeypatch):
+    import langchain_google_genai
+    options = []
+    monkeypatch.setenv('GOOGLE_API_KEY', 'test-google-key')
+    monkeypatch.setattr(langchain_google_genai, 'ChatGoogleGenerativeAI', lambda **kwargs: options.append(kwargs) or Model([]))
+    judge = RagasJudge(JudgeSettings(provider='google', model='gemini-3.1-flash-lite', reasoning_effort='minimal'))
+    judge.prepare()
+    assert judge.llm.provider == 'google' and judge.llm.model == 'gemini-3.1-flash-lite'
+    assert options[0]['reasoning_effort'] == 'minimal' and options[0]['include_thoughts'] is False
+    assert options[0]['max_retries'] == 1 and options[0]['timeout'] == 90
+
+
+def test_completed_judging_step_survives_a_later_timeout(tmp_path):
+    model = Model(['{"supported":true}'])
+    settings = JudgeSettings()
+    first = create_json_judge_llm(settings, model=model, response_cache=tmp_path)
+    assert asyncio.run(first.agenerate('First completed workflow step', Verdict)).supported
+    failing = Model([ProviderError(503)])
+    second = create_json_judge_llm(settings, model=failing, response_cache=tmp_path)
+    assert asyncio.run(second.agenerate('First completed workflow step', Verdict)).supported
+    assert failing.calls == 0 and second.usage['response_cache_hits'] == 1
 
 
 @pytest.mark.parametrize("code", [500, 502, 503, 504])

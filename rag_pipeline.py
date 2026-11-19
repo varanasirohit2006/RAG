@@ -194,10 +194,13 @@ def load_vector_store(db_path):
 
 
 def get_or_create_vector_store(elements, persist_directory, *, progress_callback=None,
-                               document_hash=None):
+                               document_hash=None, source_documents=None):
     """Reopen a verified on-disk index across sessions and application restarts."""
     with index_lock(persist_directory):
         fingerprint = elements_fingerprint(elements)
+        if source_documents:
+            import hashlib
+            fingerprint = hashlib.sha256((fingerprint + json.dumps(source_documents, sort_keys=True)).encode()).hexdigest()
         if index_is_ready(persist_directory, fingerprint, document_hash):
             db = load_vector_store(persist_directory)
             manifest = read_index_manifest(persist_directory)
@@ -207,12 +210,31 @@ def get_or_create_vector_store(elements, persist_directory, *, progress_callback
                 return db
         if progress_callback:
             progress_callback(0, 1, "Chunking document once...")
-        chunks = create_chunks_by_title(elements)
+        if source_documents:
+            chunks = []
+            assigned = 0
+            for source in source_documents:
+                selected = [element for element in elements if element.metadata.page_number is not None
+                            and source['page_start'] <= element.metadata.page_number < source['page_start'] + source['page_count']]
+                assigned += len(selected)
+                chunks.extend(create_chunks_by_title(selected))
+            if assigned != len(elements):
+                raise ValueError('Combined PDF evidence has missing page provenance; its original files cannot be mapped safely.')
+        else:
+            chunks = create_chunks_by_title(elements)
         documents = summarise_chunks(chunks, progress_callback=progress_callback)
-        return build_vector_store(
+        if source_documents:
+            from pdf_batches import annotate_chunks
+            annotate_chunks(documents, source_documents)
+        database = build_vector_store(
             documents, persist_directory, get_embedding_model(), progress_callback=progress_callback,
             replace=True, source_fingerprint=fingerprint, document_hash=document_hash,
         )
+        if source_documents:
+            from index_runtime import write_index_manifest
+            manifest = read_index_manifest(persist_directory)
+            write_index_manifest(Path(persist_directory), {**manifest, 'source_documents': source_documents, 'corpus_type': 'combined_pdfs'})
+        return database
 
 
 def run_complete_ingestion_pipeline(pdf_path: str, *, persist_directory="db/chroma_db",

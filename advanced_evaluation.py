@@ -24,7 +24,9 @@ from evaluation_data import (
     EvaluationDataError, dataset_template, document_id, document_pages, lexical_reference_metrics,
     load_evaluation_dataset, resolve_relevance, retrieval_metrics, validate_score,
 )
-from evaluation_judge import JudgeSettings, RagasJudge
+from evaluation_judge import JudgeSettings, RagasJudge, JudgeQuotaExceeded, provider_status_code
+from provider_limits import (OpenRouterLimitExceeded, current_openrouter_limit, limit_message,
+                             record_openrouter_limit)
 
 DEFAULT_STRATEGIES = {
     "preview": ("Production",),
@@ -361,6 +363,9 @@ async def run_evaluation(
     generator_provider = os.getenv("GENERATION_PROVIDER", "google")
     generator_model = os.getenv("GENERATION_MODEL", "gemini-3.5-flash-lite")
     judge_settings = JudgeSettings.from_env() if profile != "retrieval" else None
+    metric_timeout = int(os.getenv('EVALUATION_METRIC_TIMEOUT', str(max(300, judge_settings.timeout * 4)))) if judge_settings else None
+    if metric_timeout is not None and not 15 <= metric_timeout <= 1200:
+        raise ValueError('EVALUATION_METRIC_TIMEOUT must be between 15 and 1200 seconds.')
     versions = {}
     for package in ("ragas", "langchain-google-genai", "langchain-openai", "openai", "sentence-transformers"):
         try:
@@ -371,6 +376,8 @@ async def run_evaluation(
         "implementation_revision": _revision(), "package_versions": versions,
         "index_path": str(target), "document_hash": cases[0].document_hash,
         "corpus_version": corpus_version, "profile": profile, "strategies": list(strategies),
+        'corpus_type': index_manifest.get('corpus_type', 'single_pdf'),
+        'source_documents': index_manifest.get('source_documents', []),
         "index_configuration": {name: index_manifest.get(name) for name in (
             "embedding_model", "embedding_revision", "pipeline_version", "chunk_config_version",
         )},
@@ -379,6 +386,7 @@ async def run_evaluation(
         "generator_provider": generator_provider if profile != "retrieval" else None,
         "generator_model": generator_model if profile != "retrieval" else None,
         "judge": asdict(judge_settings) if judge_settings else None,
+        "metric_timeout_seconds": metric_timeout,
         "retrieval_k": retrieval_k, "metric_k": final_k,
         "generation_limits": {name: os.getenv(name) for name in (
             "GENERATION_MAX_CONTEXT_CHARS", "GENERATION_MAX_IMAGES", "GENERATION_MAX_OUTPUT_TOKENS",
@@ -410,6 +418,7 @@ async def run_evaluation(
         "total_questions": len(cases), "sampled_questions": len(selected), "samples": total,
         "strategies": list(strategies), "document_hash": cases[0].document_hash,
         "corpus_version": corpus_version, "configuration": config,
+        'corpus_type': config['corpus_type'], 'source_documents': config['source_documents'],
         "scope": "deterministic preview subset" if profile == "preview" else "all imported cases",
         "warnings": ["Preview results do not establish full-corpus quality."] if profile == "preview" else [],
         "metric_catalog": METRIC_CATALOG,
@@ -435,17 +444,19 @@ async def run_evaluation(
     call_semaphore = asyncio.Semaphore(concurrency)
     cache_hits = 0
     work_counts = {"generation_operations": 0, "judge_metric_operations": 0}
+    provider_limit = None
 
     async def answer_for(case, docs, context):
         nonlocal cache_hits
-        answer_key = _hash({
+        identity = {
             "revision": config["implementation_revision"], "index_path": str(target),
             "provider": generator_provider, "model": generator_model,
             "question": case.question,
             "prompt": context.get("prompt"), "texts": context.get("text_contexts"),
             "images": [_hash(payload) for payload in context.get("images_base64", [])],
             "limits": config["generation_limits"],
-        })
+        }
+        answer_key = _hash(identity)
         path = cache_directory / "answers" / (answer_key + ".json")
         cached = _read_json(path) if not force else None
         if cached and isinstance(cached.get("answer"), str) and cached["answer"].strip():
@@ -456,6 +467,9 @@ async def run_evaluation(
                 async with call_semaphore:
                     if cancelled():
                         raise asyncio.CancelledError()
+                    if provider_limit and generator_provider == provider_limit.get('provider') and (
+                        generator_provider == 'openrouter' or generator_model == provider_limit.get('model')):
+                        raise JudgeQuotaExceeded(provider_limit)
                     work_counts["generation_operations"] += 1
                     answer = await asyncio.to_thread(
                         generate_final_answer, docs, case.question,
@@ -470,18 +484,19 @@ async def run_evaluation(
         else:
             reused = True
             cache_hits += 1
-        answer = await asyncio.wait_for(asyncio.shield(shared_answers[answer_key]), timeout=judge_settings.timeout)
+        answer = await asyncio.shield(shared_answers[answer_key])
         return answer, reused
 
     async def metric_for(name, case, response, context, image_paths):
         nonlocal cache_hits
-        key = _hash({
+        identity = {
             "revision": config["implementation_revision"], "index_path": str(target),
             "index_configuration": config["index_configuration"],
             "judge": config["judge"], "name": name, "question": case.question,
             "response": response, "reference": case.reference_answer,
             "texts": context["text_contexts"], "images": [_hash(payload) for payload in context.get("images_base64", [])],
-        })
+        }
+        key = _hash(identity)
         path = cache_directory / "metrics" / (key + ".json")
         cached = _read_json(path) if not force else None
         if cached:
@@ -496,11 +511,18 @@ async def run_evaluation(
                 async with call_semaphore:
                     if cancelled():
                         return {"status": "skipped", "reason": "cancelled"}
+                    if provider_limit:
+                        return {"status": "skipped", "reason": limit_message(provider_limit), "provider_status_code": 429}
                     work_counts["judge_metric_operations"] += 1
-                    result = await asyncio.wait_for(judge.score(
-                        name, question=case.question, response=response, reference=case.reference_answer,
-                        contexts=context["text_contexts"], image_contexts=image_paths,
-                    ), timeout=judge_settings.timeout)
+                    budget = asyncio.timeout(metric_timeout)
+                    try:
+                        async with budget:
+                            result = await judge.score(
+                                name, question=case.question, response=response, reference=case.reference_answer,
+                                contexts=context["text_contexts"], image_contexts=image_paths)
+                    except TimeoutError as exc:
+                        explanation = f'{name} exceeded its {metric_timeout}-second complete-metric deadline' if budget.expired() else f'A provider request timed out during {name} (request limit: {judge_settings.timeout} seconds)'
+                        raise TimeoutError(explanation + '; completed judging steps are retained for retry.') from exc
                 value = validate_score(name, result["value"])
                 _write_json(path, {"value": value, "reason": result.get("reason"), "created_at": _utc()})
                 return {"status": "completed", "value": value, "reason": result.get("reason"), "cache_hit": False}
@@ -513,7 +535,7 @@ async def run_evaluation(
         return {**result, "cache_hit": reused}
 
     async def process(case, strategy):
-        nonlocal done
+        nonlocal done, provider_limit
         record = {
             "run_id": manifest["run_id"],
             "question_id": case.id, "question": case.question, "reference_answer": case.reference_answer,
@@ -622,12 +644,20 @@ async def run_evaluation(
                 emit(f"{strategy} / {case.id}: judging {len(names)} applicable quality metrics")
                 stage = time.perf_counter()
                 async def score_one(name):
+                    nonlocal provider_limit
                     try:
                         result = await metric_for(name, case, response, context, record["image_contexts"])
                     except asyncio.CancelledError:
                         result = {"status": "skipped", "reason": "cancelled"}
                     except Exception as exc:
-                        result = {"status": "failed", "error": _error(exc)}
+                        if provider_status_code(exc) == 429:
+                            details = record_openrouter_limit(exc) if judge_settings.provider == 'openrouter' else {}
+                            provider_limit = {**details, "status_code": 429, "provider": judge_settings.provider, "model": judge_settings.model,
+                                              "reason": limit_message(details) if details else str(JudgeQuotaExceeded())}
+                            result = {"status": "skipped" if isinstance(exc, JudgeQuotaExceeded) else "failed",
+                                      "error": provider_limit['reason'], "reason": provider_limit['reason'], "provider_status_code": 429}
+                        else:
+                            result = {"status": "failed", "error": _error(exc)}
                     record["metrics"][name] = result
                 try:
                     await asyncio.gather(*(score_one(name) for name in names))
@@ -643,15 +673,25 @@ async def run_evaluation(
                     metric.get("status") == "skipped" and metric.get("reason") == "cancelled"
                     for metric in record["metrics"].values()
                 ) else "partial" if any(
-                    metric.get("status") == "failed" for metric in record["metrics"].values()
+                    metric.get("status") == "failed" or metric.get("provider_status_code") == 429 for metric in record["metrics"].values()
                 ) else "completed"
                 return record
             except asyncio.CancelledError:
                 record["status"] = "cancelled"
                 return record
             except Exception as exc:
-                record["status"] = "failed"
-                record["error"] = _error(exc)
+                if provider_status_code(exc) == 429:
+                    details = record_openrouter_limit(exc) if generator_provider == 'openrouter' else {}
+                    provider_limit = {**details, 'provider': generator_provider, 'model': generator_model, 'status_code': 429}
+                    provider_limit['reason'] = limit_message(provider_limit)
+                    record['status'] = 'skipped'
+                    record['error'] = provider_limit['reason']
+                    for name, metric in record['metrics'].items():
+                        if metric['status'] == 'skipped':
+                            record['metrics'][name] = {'status': 'skipped', 'reason': provider_limit['reason'], 'provider_status_code': 429}
+                else:
+                    record["status"] = "failed"
+                    record["error"] = _error(exc)
                 return record
             finally:
                 record["sample_seconds"] = round(time.perf_counter() - sample_started, 4)
@@ -669,9 +709,10 @@ async def run_evaluation(
             emit("Preparing the configured evaluation judge; completed answers and scores will be reused")
             judge = RagasJudge(judge_settings, embedding_model=get_embedding_model())
             judge.prepare()
-        # Start independent questions first; identical strategy contexts share one request
-        # without occupying the entire initial concurrency window.
-        await asyncio.gather(*(process(case, strategy) for strategy in strategies for case in selected))
+        # Rotate questions while alternating strategies: quota cannot all go to Keyword.
+        scheduled = [(selected[(round_index + strategy_index) % len(selected)], strategy)
+                     for round_index in range(len(selected)) for strategy_index, strategy in enumerate(strategies)]
+        await asyncio.gather(*(process(case, strategy) for case, strategy in scheduled))
         record_order = {(case.id, strategy): index for index, (case, strategy) in enumerate(
             (case, strategy) for case in selected for strategy in strategies
         )}
@@ -680,7 +721,7 @@ async def run_evaluation(
         sample_path.write_text("".join(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n" for record in records), encoding="utf-8")
         failed = sum(record["status"] in {"failed", "partial"} for record in records)
         skipped = sum(record["status"] in {"skipped", "cancelled"} for record in records)
-        status = "cancelled" if cancelled() else "partial" if failed and any(record["status"] in {"completed", "partial"} for record in records) else "failed" if failed else "completed"
+        status = "cancelled" if cancelled() else "partial" if (failed or skipped or provider_limit) and any(record["status"] in {"completed", "partial"} for record in records) else "failed" if failed or provider_limit else "completed"
         manifest.update({
             "status": status, "finished_at": _utc(), "seconds": round(time.perf_counter() - started, 3),
             "failed_samples": failed, "skipped_samples": skipped, "cache_hits": cache_hits,
@@ -689,6 +730,9 @@ async def run_evaluation(
         })
         if judge is not None and hasattr(getattr(judge, "llm", None), "usage"):
             manifest["judge_usage"] = judge.llm.usage
+        if provider_limit:
+            manifest["provider_limit"] = provider_limit
+            manifest["warnings"].append(provider_limit['reason'])
         summary = summarize_records(records)
         summary.to_csv(directory / "summary.csv", index=False)
         _write_json(manifest_path, manifest)

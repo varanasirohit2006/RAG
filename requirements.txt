@@ -19,6 +19,7 @@ python-dotenv==1.2.2
 fastapi==0.137.2
 uvicorn==0.38.0
 python-multipart==0.0.20
+PyJWT[crypto]==2.15.1
 Pillow==13.0.0
 pydantic==2.13.4
 cohere==5.21.1

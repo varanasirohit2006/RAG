@@ -26,8 +26,9 @@ class JobCancelled(RuntimeError):
 class BackgroundJob:
     """Session-owned work; workers never call Streamlit or access session state."""
 
-    def __init__(self, target, *, key=None):
+    def __init__(self, target, *, key=None, on_change=None):
         self.key = key
+        self.on_change = on_change
         self.cancellation_event = threading.Event()
         self._lock = threading.Lock()
         self.status = "queued"
@@ -43,6 +44,7 @@ class BackgroundJob:
         with self._lock:
             self.status = "running"
         try:
+            self._publish()
             self.check_cancelled()
             result = target(self)
             self.check_cancelled()
@@ -60,6 +62,11 @@ class BackgroundJob:
         finally:
             with self._lock:
                 self.finished = time.perf_counter()
+            self._publish()
+
+    def _publish(self):
+        if self.on_change:
+            self.on_change(self.snapshot())
 
     def check_cancelled(self):
         if self.cancellation_event.is_set():
@@ -72,11 +79,13 @@ class BackgroundJob:
             self.message = str(message)
             if not self.events or self.events[-1][1] != self.message:
                 self.events.append((round(time.perf_counter() - self.created, 2), self.message))
+        self._publish()
 
     def token(self, text):
         self.check_cancelled()
         with self._lock:
             self.partial_text += str(text)
+        self._publish()
 
     def cancel(self):
         self.cancellation_event.set()
@@ -84,6 +93,7 @@ class BackgroundJob:
             with self._lock:
                 self.status, self.message = "cancelled", "Cancelled"
                 self.finished = time.perf_counter()
+            self._publish()
 
     def snapshot(self):
         with self._lock:
@@ -143,7 +153,7 @@ def extract_with_cache(file_path, document_hash, settings, *, progress_callback=
     return elements, False
 
 
-def prepare_document(file_path, document_hash, index_key, settings, job):
+def prepare_document(file_path, document_hash, index_key, settings, job, *, source_documents=None, storage_root=None):
     from rag_pipeline import get_or_create_vector_store
 
     started = time.perf_counter()
@@ -154,8 +164,10 @@ def prepare_document(file_path, document_hash, index_key, settings, job):
     job.progress(0, 1, "Preparing document search index")
     started = time.perf_counter()
     directory = f"db/chroma_{index_key}"
-    database = get_or_create_vector_store(elements, directory, document_hash=document_hash,
-                                          progress_callback=job.progress)
+    options = {'source_documents': source_documents} if source_documents else {}
+    target = str(Path(storage_root) / directory) if storage_root else directory
+    database = get_or_create_vector_store(elements, target, document_hash=document_hash,
+                                          progress_callback=job.progress, **options)
     return {"elements": elements, "stats": dict(Counter(element.category for element in elements)),
             "database": database, "index_path": directory, "extraction_cache_hit": hit,
             "timings": {"extraction_seconds": round(extraction_seconds, 3),
