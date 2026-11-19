@@ -34,18 +34,23 @@ configure your credentials. Preserve existing API keys when changing settings.
 ```dotenv
 GOOGLE_API_KEY=your_google_key
 GENERATION_PROVIDER=google
-GENERATION_MODEL=gemma-4-26b-a4b-it
+GENERATION_MODEL=gemini-3.1-flash-lite
+SYNTHETIC_GENERATION_PROVIDER=google
+SYNTHETIC_GENERATION_MODEL=gemini-3.1-flash-lite
+SYNTHETIC_GENERATION_CONCURRENCY=1
 
 EVALUATION_PROVIDER=google
-EVALUATION_MODEL=gemma-4-26b-a4b-it
+EVALUATION_MODEL=gemini-3.1-flash-lite
 EVALUATION_REASONING_EFFORT=minimal
-EVALUATION_CONCURRENCY=2
+EVALUATION_CONCURRENCY=1
 EVALUATION_METRIC_TIMEOUT=360
 SYNTHETIC_ALLOW_SAME_MODEL_VERIFICATION=true
 ```
 
-The current preset uses Google Gemma 4 26B A4B for question drafting, answers,
-source-reference checks and Ragas scoring. Provider quotas still apply.
+The current preset uses standard Google Gemini 3.1 Flash-Lite for question drafting,
+answers, source-reference checks and Ragas scoring. Start with one question and
+**Quality preview**; each question needs multiple provider requests. Check your
+Google AI Studio project's available quota before increasing the run size.
 Same-model source checking is explicitly labelled and is not
 independent verification. Set a different judge and disable the same-model flag
 when an independent comparison is needed. Cohere reranking is optional and uses
@@ -53,6 +58,17 @@ when an independent comparison is needed. Cohere reranking is optional and uses
 
 Optional OpenRouter generation/judging still requires fixed `:free` model IDs,
 zero-price routing and an explicitly configured `OPENROUTER_API_KEY`.
+
+Ollama can also handle drafting, answers, verification and scoring without a
+cloud model key. Set `GENERATION_PROVIDER`, `SYNTHETIC_GENERATION_PROVIDER` and
+`EVALUATION_PROVIDER` to `ollama`; set all three model settings and
+`LOCAL_GENERATION_MODEL` to the installed model ID. `OLLAMA_BASE_URL` defaults to
+`http://localhost:11434`. See the complete overrides in `.env.example`.
+Small text-only models such as `gemma3:270m` can answer basic questions while
+failing exact-quote drafting or structured judging. In that case, imported
+source-checked questions let you test retrieval, answers and scoring separately.
+Ollama decoding omits string-length bounds that its grammar compiler can reject;
+the full schema and exact source quotes are still validated before scoring.
 
 Start the app:
 
@@ -199,6 +215,13 @@ using exponential backoff within the original request deadline. Configure
 Cancellation remains available during the delay; HTTP 429 and authentication
 errors do not trigger these retries. A different model can also encounter provider
 availability or quota errors.
+
+Answer generation also retries these temporary errors once before emitting any
+answer text. `GENERATION_MAX_RETRIES` (0–2) and
+`GENERATION_RETRY_DELAY_SECONDS` (0.1–5) control retries. The backoff and retry
+share `MODEL_TIMEOUT_SECONDS`; the retry client receives only the remaining
+request time. Partial streamed answers are retained as incomplete and are not
+replayed, and authentication/quota errors are not retried.
 
 Missing reranker configuration and reranker fallback remain explicit in reports.
 No paid judge is silently substituted for a configured free OpenRouter model.

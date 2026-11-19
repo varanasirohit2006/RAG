@@ -1,19 +1,20 @@
 # Project handoff
 
-Updated: 19 November 2026.
+Updated: 20 November 2026.
 
-## Current work
+## Current state
 
-After cleanup/publication, the user reported automatic drafting HTTP 503 failures
-and explicitly requested switching all stages to **Gemma 4 26B**. Drafting,
-answers, reference checking and judging now use `gemma-4-26b-a4b-it` through Google.
-The original failure contained four HTTP 503 records and no HTTP 429 quota error;
-its diagnostic is preserved. Google model metadata returned HTTP 200 for the
-configured key. Temporary drafting failures now have one bounded retry by default.
-Disposable browser QA output is removed; historical notes are condensed.
-Preserve application sources,
-tests, deployment configuration, reference documents and existing local data.
-The maintained app is React/TypeScript with FastAPI. Streamlit is retired.
+The user approved finishing the Gemini migration, cleanup, documentation and
+GitHub push. Deployment planning is deferred until after this repository update.
+The maintained application is React/TypeScript with FastAPI; Streamlit is retired.
+
+The selected preset is Google `gemini-3.1-flash-lite` for question drafting,
+answers, source verification and Ragas scoring, with minimal thinking and
+concurrency one. Existing credentials and local data are retained. A live
+one-question Quality preview on the handbook completed all five answer-quality
+metrics with no failed samples after retrying a temporary answer HTTP 503.
+This is a small workflow check, not judge calibration or a general accuracy claim.
+The same model drafts, verifies and scores; reports label that limitation.
 
 ## Start and validate
 
@@ -23,11 +24,8 @@ From this directory:
 .\.venv\Scripts\python.exe -B run_app.py
 ```
 
-The default URL is http://127.0.0.1:8501. Startup warms local search dependencies
-without making model inference requests. The idle main server was restarted for
-the Gemma switch; health returned HTTP 200 and bootstrap reports
-`gemma-4-26b-a4b-it` for generation/judging, same-model checking and a three-PDF
-batch limit. Temporary browser fixture servers were stopped after validation.
+Open http://127.0.0.1:8501. Startup warms local embeddings and model clients
+without making model inference requests. Restart Python after changing `.env`.
 
 ```powershell
 .\.venv\Scripts\python.exe -B -m pytest tests -q -p no:cacheprovider
@@ -35,84 +33,74 @@ cd frontend
 npm run build
 ```
 
-Gemma/retry verification passed all **257 tests** in 77.16 seconds with five
-existing dependency warnings. The production React build passed at the preceding
-cleanup/publication checkpoint; this update changes backend behavior/configuration.
-The earlier final authentication suite passed 32 tests. Offline Edge desktop/mobile
-flows passed, including login/logout, account isolation, expiry, saved-work
-recovery and multi-PDF evaluation. No paid model calls ran for those checks.
-Windows sandbox restrictions may require approval for the test temporary
-directory and frontend dependency resolution. Existing dependency warnings
-are documented by the test output; offline tests do not calibrate model quality.
+Final backend validation passed **289 tests** in 46.72 seconds with five existing
+dependency/deprecation warnings. The production React build passed. The frontend
+build needed sandbox escalation because esbuild could not resolve the existing
+Vite configuration through restricted parent directories. Regression tests are
+offline and isolate provider caches; they do not establish live model quality.
+Earlier desktop/mobile checks covered authentication, ownership, recovery and
+multi-PDF flows. No live OIDC or Linux container validation is claimed.
 
-## Configuration and data
+## Provider behavior
 
-- Keep the backend `.env` and existing credentials private. Never print secrets,
-  put them in React/VITE variables, stage them in Git or bake them into images.
-- The current user-selected generator, question drafter, source verifier and judge
-  use Google `gemma-4-26b-a4b-it`. Same-model verification is deliberately
-  labelled as non-independent. Evaluation concurrency is two; individual judge
-  requests have 90-second timeouts and complete metrics have 360-second deadlines.
-- Existing PDFs, indexes, extraction caches, datasets and results are in `docs/`,
-  `db/`, `.cache/`, `evaluation_datasets/` and `evaluation_runs/`. Preserve them.
-  These directories, `.env`, installed dependencies and build output are ignored.
-- The parent workspace also contains the user's original CSV/manifest exports
-  and `RESULTS_REVIEW.md`. Preserve those user files outside the Git repository.
-  The review verified provenance and aggregate arithmetic, but the run was partial:
-  only four of 24 samples and 31 of 120 answer-quality scores completed. Retrieval
-  covered all six questions per strategy; incomplete quality scores cannot fairly
-  rank strategies. Provider 429/503 errors do not establish missing billing.
-- `project_docs/` contains the original metric images and evaluation handbook;
-  these are useful project references. Keep `.venv` and frontend dependencies
-  available for local development. Keep the production frontend build for startup.
+- Gemini 3.1 Flash-Lite uses the standard Google text API, not the Live API.
+  The runtime configures minimal reasoning and suppresses thought output.
+- Drafting retries structured HTTP 500/502/503/504 errors within its original
+  deadline. `SYNTHETIC_MAX_RETRIES` defaults to one and is bounded to 0–2;
+  `SYNTHETIC_RETRY_DELAY_SECONDS` defaults to one and is bounded to 0.1–5.
+- Answers use the same transient status policy, with
+  `GENERATION_MAX_RETRIES` and `GENERATION_RETRY_DELAY_SECONDS`. Retries happen
+  only before answer text is emitted and receive the remaining request timeout.
+  Partial streamed answers are retained as incomplete rather than replayed.
+- Authentication, HTTP 429 quota errors, malformed references and truncated
+  output are not treated as transient answer failures. Provider status codes
+  are extracted from structured errors and their causes, not error prose.
+- Google/OpenRouter judges validate complete JSON, share a bounded retry/repair
+  budget, cache completed judging steps and retain measured provider usage.
+  OpenRouter requires a fixed `:free` ID, zero-price routing and its own key.
+- Ollama supports drafting, answers, verification and scoring with no cloud
+  model credential. Each evaluation owns and closes its local transports.
+  Decoding schemas omit string-length bounds that Ollama's grammar compiler
+  can reject; full Pydantic validation and exact quote checks remain enforced.
+  `gemma3:270m` and `gemma3:1b` receive text/tables without image inputs. The
+  270M trial passed simple Q&A but failed source-quote drafting; model capacity
+  still matters for successful evaluation. Imported source-checked questions
+  can test retrieval, answers and judging without automatic drafting.
 
-## Implemented behavior
+## Preserve data and credentials
 
-Automatic evaluation drafts source-linked questions, validates exact supporting
-quotes and checks references before scoring through the production RAG pipeline.
-Reports retain real per-sample evidence, valid/failed/skipped counts, provider
-errors and latency. Missing scores remain unavailable. No automatic overall
-winner is invented. Structured judging steps and completed answers are cached;
-strategy scheduling alternates to reduce provider-quota bias.
-Drafting retries structured HTTP 500/502/503/504 errors with exponential backoff
-within the same request deadline. `SYNTHETIC_MAX_RETRIES` defaults to one (0–2)
-and `SYNTHETIC_RETRY_DELAY_SECONDS` to one second (0.1–5). Authentication/quota
-errors are not retried; cancellation works during backoff. Actual drafting
-request attempts are retained separately from candidate-operation counts.
+Keep `.env`, installed `.venv`/frontend dependencies, the production frontend
+build, original PDFs/assets, indexes, extraction caches, generated/imported
+questions and evaluation reports. Runtime storage is in `docs/`, `db/`, `.cache/`,
+`evaluation_datasets/` and `evaluation_runs/`; these are ignored by Git.
+Never print or publish keys, put them in React/VITE variables or bake them into
+images. Preserve the parent workspace's original CSV/manifest exports and
+`RESULTS_REVIEW.md`, plus the useful `project_docs/` reference assets.
+Remove only confirmed disposable test directories, helpers and obsolete logs.
 
-One-to-three-PDF upload supports separate preparation or one combined workspace.
-Batch evaluation saves a dataset/report per original or one combined report.
-Combined chunks preserve original-file boundaries, page provenance and source
-coverage; source links show combined and original pages. Batch inputs persist
-and use the explicit restart-recovery path. Ownership checks cover all files.
+## Implemented application and release boundary
 
-The durable SQLite catalog records job settings, progress and completed results.
-Startup/shutdown mark interrupted work for explicit retry. Duplicate retries share
-one replacement job; completed artifacts and valid caches are reused. Cancelled
-jobs remain cancelled. Recovery currently supports one application process;
-unfinished provider requests may need to run again and use credits.
+Automatic questions require exact indexed source evidence and a passing source
+verdict before scoring. Reports expose sample counts, failures/skips, evidence,
+provider limits, latency and uncertainty; unavailable scores are not zero.
+One-to-three-PDF workflows support separate or combined preparation/evaluation,
+original-file/page provenance, source coverage and reports per selected scope.
 
-OIDC authorization-code login uses PKCE S256, browser-bound one-use state, nonce
-and verified issuer/subject identities. RS256/ES256 signatures, audience,
-authorized party and timestamps are checked; trusted JWKS keys refresh on
-rotation. Opaque session cookies are HttpOnly; only their hashes are stored.
-Sessions persist across restart, expire and revoke on logout. Progress streams
-stop after expiry/revocation. Accounts retain their IDs across name/email changes.
-Private documents, answers, datasets, jobs, retries, assets and exports require
-the verified owner. React caches and remembered jobs reset on account changes.
+SQLite stores owned resources, durable job settings/progress and explicit
+restart/retry recovery. Duplicate retries share a replacement job; completed
+artifacts and valid caches are reused. One application process is supported.
 
-`APP_AUTH_MODE=local` remains the default. OIDC requires provider registration,
-`APP_BASE_URL`, `OIDC_ISSUER`, `OIDC_CLIENT_ID` and a suitable token authentication
-method/secret. Register the exact `APP_BASE_URL/api/auth/callback` redirect URI.
-See README and `.env.example`. Invalid OIDC configuration stops startup.
-Public URLs require HTTPS; loopback HTTP is supported for development.
-Existing local resources are not automatically assigned to the first account.
-No live identity-provider configuration was supplied, and `.env` was not changed.
+OIDC login uses authorization code/PKCE, one-use browser-bound state and nonce,
+verified issuer/audience/subject/signatures and revocable hashed sessions.
+Private API reads/writes and progress require the verified owner. Browser caches
+and remembered jobs reset on account changes. `APP_AUTH_MODE=local` remains the
+localhost development default; existing local resources are not assigned to the
+first OIDC account. Invalid OIDC configuration stops startup.
 
-## Remaining release work
-
-Follow `PROJECT_PLAN.md`: live OIDC/TLS setup, shared-worker coordination,
-per-account usage/spend limits, Linux container execution and dependency locking,
-load/backup/deletion validation, and reviewed scan/chart/judge calibration.
-The hosting constraint is zero subscription cost; API usage is separate. Keep
-localhost deployment defaults until the public release requirements are met.
+The Dockerfile/Compose configuration keeps localhost binding, persistent local
+stores, non-root execution, the pinned embedding revision and a health check.
+Linux execution remains unverified. Follow `PROJECT_PLAN.md` after deployment
+planning resumes: live OIDC/TLS registration, worker coordination and account
+usage/spend limits, reviewed scan/table/chart/judge evidence, container and
+backup/restore validation. Hosting subscription cost is intended to stay zero;
+model usage, electricity and connectivity are separate costs.

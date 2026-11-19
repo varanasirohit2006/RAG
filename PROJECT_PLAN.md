@@ -1,6 +1,6 @@
 # RAG project roadmap
 
-Updated: 19 November 2026. See README for operation and HANDOFF for continuation.
+Updated: 20 November 2026. See README for operation and HANDOFF for continuation.
 
 ## Agreed scope
 
@@ -11,7 +11,7 @@ Updated: 19 November 2026. See README for operation and HANDOFF for continuation
 - Private accounts, owned documents/results, durable jobs and reproducible reports.
 - One computer/server initially; zero hosting subscription cost. Model API usage,
   electricity, storage and connectivity are separate costs.
-- The current user-selected model is Google `gemma-4-26b-a4b-it` for drafting,
+- The current user-selected model is Google `gemini-3.1-flash-lite` for drafting,
   answers, source checking and judging. Same-model checks are labelled as
   non-independent; configuration supports a separately selected judge.
 
@@ -23,16 +23,18 @@ Updated: 19 November 2026. See README for operation and HANDOFF for continuation
 | Extraction | Native text and tables first; bundled CPU RapidOCR on scans; PDFium visual evidence; bounded pages, upload size and rendering resources. OCR diagnostic/transcription scoring is available. |
 | Retrieval | Stable chunk IDs, persistent extraction/index reuse, keyword/vector/hybrid retrieval, actual query fusion and optional bounded Cohere reranking. |
 | Evaluation | Automatic source-linked questions and references, exact quote validation, production-path answers, five answer-quality metrics, retrieval/citation diagnostics and explicit unavailable/failure counts. |
-| Provider handling | Bounded timeouts/retries, JSON validation, separate request/metric deadlines, alternating strategies, reusable judging-step caches, measured usage and provider failure details. |
+| Provider handling | Google, fixed free OpenRouter routes and optional Ollama generation/verification/scoring; bounded retries, remaining-time answer retries before streaming text, schema validation, separate request/metric deadlines and reusable judging-step caches. |
 | Multiple PDFs | Upload up to three originals, separate or combined preparation/evaluation, per-original reports or one combined report, original boundaries/page links and source coverage. |
 | Recovery | Durable job settings/progress, explicit retry after restart, deduplicated replacement jobs, completed-artifact recovery and valid stage-cache reuse. One process is supported. |
 | Accounts | Configurable OIDC login/logout with PKCE and signature/claim validation, issuer/subject identities, durable expiring/revocable sessions and private API ownership. Browser caches/jobs reset on account changes. |
 | Packaging | React/Python Linux Dockerfile, localhost-bound Compose, persistent volumes, non-root execution, pinned embedding revision and API health check. Linux execution remains unverified. |
 
-The latest offline checks passed all 257 regression tests; the production React
-build passed at the preceding cleanup checkpoint. Earlier checks also covered
-desktop/mobile browser flows.
-Live provider availability and judge calibration require separate evidence.
+Final regression checks and the production React build are recorded in HANDOFF.
+Earlier checks also covered desktop/mobile browser flows. A live one-question
+Gemini 3.1 Flash-Lite Quality preview completed all five answer-quality metrics
+after retrying a temporary HTTP 503 during answer generation. This proves a
+small workflow can complete; representative evidence and judge calibration
+remain release work. Deployment planning is deferred at the user's request.
 Existing local documents/results and credentials are retained and ignored by Git.
 
 ## 1. Finish account deployment setup

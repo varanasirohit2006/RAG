@@ -340,7 +340,7 @@ async def run_evaluation(
         raise ValueError("EVALUATION_CONCURRENCY must be between 1 and 8.")
     from rag_pipeline import get_embedding_model, load_vector_store, generate_final_answer
     from retrieval_runtime import get_retrievers, retrieve_documents
-    from generation_runtime import prepare_generation_context
+    from generation_runtime import prepare_generation_context, model_name_for
 
     emit("Loading the prepared index; no document ingestion is repeated")
     target = Path(db_path or get_db_path()).resolve()
@@ -361,7 +361,7 @@ async def run_evaluation(
     relevance = {case.id: resolve_relevance(case, all_docs) for case in cases}
     corpus_version = index_manifest.get("corpus_version") or _hash(sorted(document_id(document) for document in all_docs))
     generator_provider = os.getenv("GENERATION_PROVIDER", "google")
-    generator_model = os.getenv("GENERATION_MODEL", "gemma-4-26b-a4b-it")
+    generator_model = model_name_for(generator_provider)
     judge_settings = JudgeSettings.from_env() if profile != "retrieval" else None
     metric_timeout = int(os.getenv('EVALUATION_METRIC_TIMEOUT', str(max(300, judge_settings.timeout * 4)))) if judge_settings else None
     if metric_timeout is not None and not 15 <= metric_timeout <= 1200:
@@ -391,6 +391,7 @@ async def run_evaluation(
         "generation_limits": {name: os.getenv(name) for name in (
             "GENERATION_MAX_CONTEXT_CHARS", "GENERATION_MAX_IMAGES", "GENERATION_MAX_OUTPUT_TOKENS",
             "MODEL_TIMEOUT_SECONDS", "GENERATION_IMAGE_MAX_DIM", "GENERATION_THINKING_BUDGET",
+            "GENERATION_MAX_RETRIES", "GENERATION_RETRY_DELAY_SECONDS",
         )},
         "reranker": _reranker_configuration(strategies),
     }

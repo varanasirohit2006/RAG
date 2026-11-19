@@ -13,8 +13,9 @@ from functools import lru_cache
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
+from provider_limits import provider_status_code
 
-DEFAULT_GENERATION_MODEL = "gemma-4-26b-a4b-it"
+DEFAULT_GENERATION_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_OPENROUTER_GENERATION_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 # Confirmed image-input models in OpenRouter's model catalog. Unknown routes use text.
 OPENROUTER_IMAGE_MODELS = {"nvidia/nemotron-3.5-super-vl:free",
@@ -81,7 +82,38 @@ def generation_supports_images(provider=None, model_name=None):
     provider = resolve_provider(provider)
     if provider == "openrouter":
         return model_name_for(provider, model_name) in OPENROUTER_IMAGE_MODELS
+    if provider == "ollama" and model_name_for(provider, model_name).lower().rsplit("/", 1)[-1].startswith(("gemma3:270m", "gemma3:1b")):
+        return False
     return provider in {"google", "ollama"}
+
+
+async def close_ollama_model(model):
+    """Release the dedicated transports owned by a local evaluation run."""
+    async_client = getattr(getattr(model, "_async_client", None), "_client", None)
+    try:
+        if async_client is not None:
+            await async_client.aclose()
+    finally:
+        sync_client = getattr(getattr(model, "_client", None), "_client", None)
+        if sync_client is not None:
+            sync_client.close()
+
+
+def ollama_json_schema(response_model):
+    """Avoid large string repetitions in Ollama's grammar compiler.
+
+    The prompt and Pydantic still enforce the full schema, including lengths.
+    Only the decoding grammar omits string-length bounds.
+    """
+    def compatible(value):
+        if isinstance(value, dict):
+            return {key: compatible(item) for key, item in value.items()
+                    if not (value.get("type") == "string" and key in {"minLength", "maxLength"})}
+        if isinstance(value, list):
+            return [compatible(item) for item in value]
+        return value
+
+    return compatible(response_model.model_json_schema())
 
 
 @lru_cache(maxsize=8)
@@ -118,11 +150,15 @@ def _build_model(provider, model_name, timeout, max_output_tokens, thinking_budg
     raise ValueError("Extractive evidence does not use a generation model.")
 
 
-def get_generation_model(model_name=None, *, provider=None):
+def get_generation_model(model_name=None, *, provider=None, timeout_seconds=None):
     provider = resolve_provider(provider)
     if provider == "extractive":
         raise ValueError("Extractive evidence does not use a generation model.")
     timeout = _positive_int("MODEL_TIMEOUT_SECONDS", 60, 300)
+    if timeout_seconds is not None:
+        if not 0 < timeout_seconds <= timeout:
+            raise ValueError("Retry timeout must fit within MODEL_TIMEOUT_SECONDS.")
+        timeout = timeout_seconds
     max_output_tokens = _positive_int("GENERATION_MAX_OUTPUT_TOKENS", 1024, 8192)
     thinking_budget = int(os.getenv("GENERATION_THINKING_BUDGET", "0"))
     return _build_model(
@@ -144,7 +180,8 @@ def content_text(content):
 
 
 def _finish_reason(message):
-    reason = (getattr(message, "response_metadata", None) or {}).get("finish_reason")
+    metadata = getattr(message, "response_metadata", None) or {}
+    reason = metadata.get("finish_reason") or metadata.get("done_reason")
     if reason is None:
         return ""
     return str(getattr(reason, "name", reason)).upper()
@@ -318,45 +355,70 @@ def generate_final_answer(chunks, query, *, provider=None, model_name=None,
             progress_callback(0, 1, "Using extracted text and tables; this model cannot inspect images")
         progress_callback(0, 1, f"Generating with {model_name_for(provider, model_name)}...")
     model = get_generation_model(model_name, provider=provider)
+    limit = _positive_int("MODEL_TIMEOUT_SECONDS", 60, 300)
+    max_retries = int(os.getenv("GENERATION_MAX_RETRIES", "1"))
+    retry_delay = float(os.getenv("GENERATION_RETRY_DELAY_SECONDS", "1"))
+    if not 0 <= max_retries <= 2 or not 0.1 <= retry_delay <= 5:
+        raise ValueError("Answer retries require GENERATION_MAX_RETRIES 0-2 and GENERATION_RETRY_DELAY_SECONDS 0.1-5.")
+    deadline = time.perf_counter() + limit
     finish_reason = ""
+    parts = []
     try:
-        if provider == 'openrouter':
-            from provider_limits import ensure_openrouter_available
-            ensure_openrouter_available()
-        if token_callback:
-            started = time.perf_counter()
-            limit = _positive_int("MODEL_TIMEOUT_SECONDS", 60, 300)
-            parts = []
-            stream = model.stream(prepared["messages"])
+        for attempt in range(max_retries + 1):
+            if attempt:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0:
+                    raise GenerationError(f"Generation exceeded the {limit}-second deadline.")
+                model = get_generation_model(model_name, provider=provider, timeout_seconds=remaining)
+            finish_reason = ""
             try:
-                for chunk in stream:
-                    if time.perf_counter() - started > limit:
+                if provider == 'openrouter':
+                    from provider_limits import ensure_openrouter_available
+                    ensure_openrouter_available()
+                if token_callback:
+                    stream = model.stream(prepared["messages"])
+                    try:
+                        for chunk in stream:
+                            if time.perf_counter() > deadline:
+                                raise GenerationError(f"Generation exceeded the {limit}-second deadline.")
+                            text = content_text(chunk.content)
+                            finish_reason = _finish_reason(chunk) or finish_reason
+                            if text:
+                                parts.append(text)
+                                token_callback(text)
+                    finally:
+                        close = getattr(stream, "close", None)
+                        if close:
+                            close()
+                    answer = "".join(parts)
+                else:
+                    response = model.invoke(prepared["messages"])
+                    if time.perf_counter() > deadline:
                         raise GenerationError(f"Generation exceeded the {limit}-second deadline.")
-                    text = content_text(chunk.content)
-                    finish_reason = _finish_reason(chunk) or finish_reason
-                    if text:
-                        parts.append(text)
-                        token_callback(text)
-            finally:
-                close = getattr(stream, "close", None)
-                if close:
-                    close()
-            answer = "".join(parts)
-        else:
-            response = model.invoke(prepared["messages"])
-            answer = content_text(response.content)
-            finish_reason = _finish_reason(response)
+                    answer = content_text(response.content)
+                    finish_reason = _finish_reason(response)
+                break
+            except Exception as exc:
+                code = provider_status_code(exc)
+                delay = retry_delay * 2 ** attempt
+                if (parts or code not in {500, 502, 503, 504} or attempt == max_retries
+                        or deadline - time.perf_counter() <= delay):
+                    raise
+                if progress_callback:
+                    progress_callback(0, 1, f"Retrying {model_name_for(provider, model_name)} answer after HTTP {code} ({attempt + 1}/{max_retries})")
+                time.sleep(delay)
     except GenerationError:
         raise
     except Exception as exc:
-        code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+        code = provider_status_code(exc)
         if provider == 'openrouter' and code == 429:
             from provider_limits import limit_message, record_openrouter_limit
             raise GenerationError('openrouter generation blocked (HTTP 429): ' + limit_message(record_openrouter_limit(exc))) from exc
         label = f"{type(exc).__name__}" + (f", code {code}" if code else "")
         raise GenerationError(
             f"{provider} generation failed ({label}). Check the model/provider status "
-            "or retry this question; ingestion will not be repeated."
+            "or retry this question; ingestion will not be repeated.",
+            partial_answer="".join(parts) if parts else None,
         ) from exc
     if finish_reason in {"MAX_TOKENS", "LENGTH"}:
         raise GenerationError(

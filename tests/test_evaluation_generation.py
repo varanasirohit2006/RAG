@@ -33,7 +33,7 @@ def runtime(monkeypatch, tmp_path):
         return docs, {"document_hash": HASH, "corpus_version": "corpus-v1"}
 
     class DraftModel:
-        async def ainvoke(self, messages):
+        async def ainvoke(self, messages, **kwargs):
             state["draft_calls"] += 1
             if state["outage"]:
                 raise RuntimeError("Provider unavailable (503)")

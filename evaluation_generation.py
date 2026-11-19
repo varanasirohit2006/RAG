@@ -149,14 +149,14 @@ def _build_clients(configuration):
     if configuration["draft_provider"] == "openrouter":
         from provider_limits import ensure_openrouter_available
         ensure_openrouter_available()
-    verifier_key = JUDGE_API_KEYS[configuration["verifier"]["provider"]]
-    if not os.getenv(verifier_key):
+    verifier_key = JUDGE_API_KEYS.get(configuration["verifier"]["provider"])
+    if verifier_key and not os.getenv(verifier_key):
         raise EvaluationDataError(f"{verifier_key} is required for independent source verification.")
     if configuration["draft_provider"] == "openrouter":
         model = create_openrouter_generation_model(configuration["draft_model"],
             configuration["draft_timeout"], configuration["draft_max_tokens"], asynchronous=True)
     else:
-        factory = _build_model.__wrapped__ if configuration['draft_provider'] == 'google' else _build_model
+        factory = _build_model.__wrapped__ if configuration['draft_provider'] in {'google', 'ollama'} else _build_model
         model = factory(
             configuration["draft_provider"], configuration["draft_model"],
             configuration["draft_timeout"], configuration["draft_max_tokens"], 0,
@@ -311,7 +311,7 @@ async def generate_evaluation_dataset(
     provider = os.getenv("SYNTHETIC_GENERATION_PROVIDER", os.getenv("GENERATION_PROVIDER", "google")).strip().lower()
     if provider not in {"google", "openrouter", "ollama"}:
         raise EvaluationDataError("Automatic question drafting requires a google, openrouter or ollama generation model.")
-    from generation_runtime import model_name_for
+    from generation_runtime import model_name_for, ollama_json_schema
     model = os.getenv("SYNTHETIC_GENERATION_MODEL", "").strip() or model_name_for(provider)
     verifier_settings = JudgeSettings.from_env()
     same_model = _model_identity(model) == _model_identity(verifier_settings.model)
@@ -438,9 +438,11 @@ async def generate_evaluation_dataset(
                 try:
                     emit(f"Drafting candidate {index + 1}; {done}/{question_count} source-verified questions")
                     work_counts["drafting_operations"] += 1
-                    response = await model_request(lambda: draft_model.ainvoke([HumanMessage(content=prompt)]), timeout, "draft")
+                    options = {"format": ollama_json_schema(DraftQuestion)} if provider == 'ollama' else {}
+                    response = await model_request(lambda: draft_model.ainvoke([HumanMessage(content=prompt)], **options), timeout, "draft")
                     stage = "draft_validation"
-                    reason = str((getattr(response, "response_metadata", None) or {}).get("finish_reason", "")).upper()
+                    response_metadata = getattr(response, "response_metadata", None) or {}
+                    reason = str(response_metadata.get("finish_reason") or response_metadata.get("done_reason", "")).upper()
                     if reason in {"MAX_TOKENS", "LENGTH"}:
                         raise EvaluationDataError("Automatic question draft was truncated and cannot be used.")
                     draft = _parse_structured_text(response.content, DraftQuestion)
@@ -606,3 +608,6 @@ async def generate_evaluation_dataset(
                     aio = getattr(client, 'aio', None)
                     if aio is not None:
                         await aio.aclose()
+                elif provider == 'ollama':
+                    from generation_runtime import close_ollama_model
+                    await close_ollama_model(draft_model)

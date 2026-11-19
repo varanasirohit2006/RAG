@@ -12,23 +12,9 @@ from functools import lru_cache
 
 from evaluation_data import validate_score
 from provider_limits import (cache_root, current_openrouter_limit, ensure_openrouter_available,
-                             limit_message, read_json, record_openrouter_limit, write_json)
+                             limit_message, provider_status_code, read_json, record_openrouter_limit, write_json)
 
 JUDGE_API_KEYS = {"google": "GOOGLE_API_KEY", "openai": "OPENAI_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
-
-
-def provider_status_code(exc):
-    """Read structured provider codes, never infer retries from error prose."""
-    seen = set()
-    while exc is not None and id(exc) not in seen and len(seen) < 8:
-        seen.add(id(exc))
-        for value in (getattr(exc, "code", None), getattr(exc, "status_code", None),
-                      getattr(getattr(exc, "response", None), "status_code", None)):
-            if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
-                return value
-        # LangChain's authentication/access wrappers keep the code on their cause.
-        exc = exc.__cause__ or exc.__context__
-    return None
 
 
 class JudgeQuotaExceeded(RuntimeError):
@@ -44,15 +30,15 @@ class JudgeQuotaExceeded(RuntimeError):
 @dataclass(frozen=True)
 class JudgeSettings:
     provider: str = "google"
-    model: str = "gemma-4-26b-a4b-it"
+    model: str = "gemini-3.1-flash-lite"
     timeout: int = 90
     max_retries: int = 1
     max_tokens: int = 4096
-    reasoning_effort: str = "low"
+    reasoning_effort: str = "minimal"
 
     def __post_init__(self):
-        if self.provider not in JUDGE_API_KEYS:
-            raise ValueError("EVALUATION_PROVIDER must be google, openai or openrouter.")
+        if self.provider not in {*JUDGE_API_KEYS, "ollama"}:
+            raise ValueError("EVALUATION_PROVIDER must be google, openai, openrouter or ollama.")
         if not self.model:
             raise ValueError("EVALUATION_MODEL is required for judged evaluation.")
         if self.provider == "openrouter" and (
@@ -72,11 +58,11 @@ class JudgeSettings:
     def from_env(cls):
         return cls(
             provider=os.getenv("EVALUATION_PROVIDER", "google"),
-            model=os.getenv("EVALUATION_MODEL", "gemma-4-26b-a4b-it"),
+            model=os.getenv("EVALUATION_MODEL", "gemini-3.1-flash-lite"),
             timeout=int(os.getenv("EVALUATION_TIMEOUT", "90")),
             max_retries=int(os.getenv("EVALUATION_MAX_RETRIES", "1")),
             max_tokens=int(os.getenv("EVALUATION_MAX_TOKENS", "4096")),
-            reasoning_effort=os.getenv("EVALUATION_REASONING_EFFORT", "low"),
+            reasoning_effort=os.getenv("EVALUATION_REASONING_EFFORT", "minimal"),
         )
 
 
@@ -124,6 +110,22 @@ def create_gemma_json_llm(settings, *, model=None):
     return create_google_json_llm(settings, model=model)
 
 
+def create_ollama_json_llm(settings, *, model=None):
+    """Use local structured output without remote credentials or fallback."""
+    owned = model is None
+    if owned:
+        from langchain_ollama import ChatOllama
+
+        model = ChatOllama(
+            model=settings.model, temperature=0,
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            num_predict=settings.max_tokens, num_ctx=max(8192, settings.max_tokens * 2),
+            keep_alive="10m", client_kwargs={"timeout": settings.timeout},
+        )
+    return create_json_judge_llm(settings, model=model,
+        response_cache=cache_root() / 'judge_responses' if owned else None)
+
+
 def create_openrouter_json_llm(settings, *, model=None):
     """Pin a free OpenRouter model; never fall back to a paid or random model."""
     owned = model is None
@@ -151,6 +153,7 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
     """Schema-validated JSON judging without tool calls or multiple candidates."""
     from ragas.llms.base import InstructorBaseRagasLLM
     from langchain_core.messages import HumanMessage
+    from generation_runtime import ollama_json_schema
 
     class JSONJudgeLLM(InstructorBaseRagasLLM):
         def __init__(self):
@@ -211,6 +214,8 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
                 import hashlib
                 identity = {'provider': settings.provider, 'model': settings.model,
                             'max_tokens': settings.max_tokens, 'messages': contents}
+                if settings.provider == 'ollama':
+                    identity['base_url'] = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
                 key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
                 cache_path = response_cache / (key + '.json')
                 saved = read_json(cache_path)
@@ -236,7 +241,8 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
                             ensure_openrouter_available()
                         self.usage["structured_generation_requests"] += 1
                         try:
-                            return await model.ainvoke([HumanMessage(content=contents)])
+                            options = {"format": ollama_json_schema(response_model)} if settings.provider == 'ollama' else {}
+                            return await model.ainvoke([HumanMessage(content=contents)], **options)
                         except Exception as exc:
                             if provider_status_code(exc) == 429:
                                 self.quota_exhausted = True
@@ -261,7 +267,8 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
                         value = metadata.get(name)
                         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                             self.usage[name] += value
-                finish_reason = str((getattr(response, "response_metadata", None) or {}).get("finish_reason", "")).upper()
+                response_metadata = getattr(response, "response_metadata", None) or {}
+                finish_reason = str(response_metadata.get("finish_reason") or response_metadata.get("done_reason", "")).upper()
                 if finish_reason in {"MAX_TOKENS", "LENGTH"}:
                     # A truncated verdict must fail visibly, not be repaired by guessing missing fields.
                     raise ValueError("Judge output was truncated; increase EVALUATION_MAX_TOKENS or shorten the dataset reference.")
@@ -282,6 +289,10 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
             raise ValueError(f"Judge JSON validation failed after {settings.max_retries + 1} bounded attempts: {last_error}")
 
         async def close(self):
+            if settings.provider == 'ollama':
+                from generation_runtime import close_ollama_model
+                await close_ollama_model(model)
+                return
             client = getattr(model, "client", None)
             aio = getattr(client, "aio", None)
             if aio is not None and hasattr(aio, "aclose"):
@@ -312,11 +323,14 @@ class RagasJudge:
             FactualCorrectness, Faithfulness, MultiModalFaithfulness,
         )
 
-        key_name = JUDGE_API_KEYS[self.settings.provider]
-        api_key = os.getenv(key_name)
-        if not api_key:
+        key_name = JUDGE_API_KEYS.get(self.settings.provider)
+        api_key = os.getenv(key_name) if key_name else None
+        if key_name and not api_key:
             raise ValueError(f"{key_name} is required for judged evaluation. Use the retrieval profile for local metrics.")
-        if self.settings.provider == "google" and self.settings.model.removeprefix('models/').startswith(("gemma", 'gemini-3.')):
+        if self.settings.provider == "ollama":
+            self.llm = create_ollama_json_llm(self.settings)
+            self.client = self.llm
+        elif self.settings.provider == "google" and self.settings.model.removeprefix('models/').startswith(("gemma", 'gemini-3.')):
             self.llm = create_google_json_llm(self.settings)
             self.client = self.llm
         elif self.settings.provider == "openrouter":

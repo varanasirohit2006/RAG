@@ -270,7 +270,8 @@ def create_app(root=None, *, warm=True, auth_transport=None):
                             catalog.put('run', owner, {'manifest': clean(manifest), 'directory': str(manifest_path.parent.relative_to(root))}, doc['id'])
                     except (ValueError, OSError):
                         continue
-        return {'generation_model': os.getenv('GENERATION_MODEL', 'gemma-4-26b-a4b-it'), 'evaluation_model': os.getenv('EVALUATION_MODEL', 'gemma-4-26b-a4b-it'),
+        from generation_runtime import DEFAULT_GENERATION_MODEL, model_name_for
+        return {'generation_model': model_name_for(), 'evaluation_model': os.getenv('EVALUATION_MODEL', DEFAULT_GENERATION_MODEL),
                 'independent_reference_verifier': os.getenv('GENERATION_MODEL') != os.getenv('EVALUATION_MODEL'),
                 'max_batch_pdfs': MAX_BATCH_PDFS,
                 'max_file_mb': ExtractionSettings.from_env().max_file_mb, 'mode': auth_settings.mode, 'reranker_configured': bool(os.getenv('COHERE_API_KEY')) and os.getenv('RERANKER_PROVIDER', 'cohere') != 'none'}

@@ -11,6 +11,19 @@ from pathlib import Path
 _lock = threading.Lock()
 
 
+def provider_status_code(exc):
+    """Read structured provider codes through wrappers; never infer them from prose."""
+    seen = set()
+    while exc is not None and id(exc) not in seen and len(seen) < 8:
+        seen.add(id(exc))
+        for value in (getattr(exc, "code", None), getattr(exc, "status_code", None),
+                      getattr(getattr(exc, "response", None), "status_code", None)):
+            if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+                return value
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 def cache_root():
     return Path(os.getenv('RAG_EVALUATION_CACHE_DIR', str(Path(__file__).resolve().parent / 'evaluation_runs' / 'cache')))
 
