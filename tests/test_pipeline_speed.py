@@ -386,3 +386,15 @@ def test_flash_lite_factory_uses_model_specific_minimal_thinking_without_custom_
     assert captured["max_retries"] == 1
     assert captured["max_output_tokens"] == 1024
     generation_runtime._build_model.cache_clear()
+
+
+def test_gemma_26b_generation_has_no_gemini_thinking_parameters(monkeypatch):
+    import langchain_google_genai
+    captured = {}
+    class FakeGoogle:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+    monkeypatch.setattr(langchain_google_genai, 'ChatGoogleGenerativeAI', FakeGoogle)
+    generation_runtime._build_model.__wrapped__('google', 'gemma-4-26b-a4b-it', 60, 2048, 0, '')
+    assert captured['model'] == 'gemma-4-26b-a4b-it'
+    assert not {'thinking_budget', 'reasoning_effort', 'include_thoughts'} & captured.keys()

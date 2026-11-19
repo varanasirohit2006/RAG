@@ -4,9 +4,14 @@ Updated: 19 November 2026.
 
 ## Current work
 
-The user requested removal of unnecessary project files and publication of the
-pending project changes to GitHub. Disposable browser QA output is removed;
-historical handoff/roadmap notes are condensed. Preserve application sources,
+After cleanup/publication, the user reported automatic drafting HTTP 503 failures
+and explicitly requested switching all stages to **Gemma 4 26B**. Drafting,
+answers, reference checking and judging now use `gemma-4-26b-a4b-it` through Google.
+The original failure contained four HTTP 503 records and no HTTP 429 quota error;
+its diagnostic is preserved. Google model metadata returned HTTP 200 for the
+configured key. Temporary drafting failures now have one bounded retry by default.
+Disposable browser QA output is removed; historical notes are condensed.
+Preserve application sources,
 tests, deployment configuration, reference documents and existing local data.
 The maintained app is React/TypeScript with FastAPI. Streamlit is retired.
 
@@ -19,8 +24,10 @@ From this directory:
 ```
 
 The default URL is http://127.0.0.1:8501. Startup warms local search dependencies
-without making model inference requests. The main server was stopped at the last
-health check; temporary browser fixture servers were stopped after validation.
+without making model inference requests. The idle main server was restarted for
+the Gemma switch; health returned HTTP 200 and bootstrap reports
+`gemma-4-26b-a4b-it` for generation/judging, same-model checking and a three-PDF
+batch limit. Temporary browser fixture servers were stopped after validation.
 
 ```powershell
 .\.venv\Scripts\python.exe -B -m pytest tests -q -p no:cacheprovider
@@ -28,8 +35,9 @@ cd frontend
 npm run build
 ```
 
-Cleanup/publication verification passed all **249 tests** in 108.31 seconds
-with five existing dependency warnings; the production React build passed.
+Gemma/retry verification passed all **257 tests** in 77.16 seconds with five
+existing dependency warnings. The production React build passed at the preceding
+cleanup/publication checkpoint; this update changes backend behavior/configuration.
 The earlier final authentication suite passed 32 tests. Offline Edge desktop/mobile
 flows passed, including login/logout, account isolation, expiry, saved-work
 recovery and multi-PDF evaluation. No paid model calls ran for those checks.
@@ -42,7 +50,7 @@ are documented by the test output; offline tests do not calibrate model quality.
 - Keep the backend `.env` and existing credentials private. Never print secrets,
   put them in React/VITE variables, stage them in Git or bake them into images.
 - The current user-selected generator, question drafter, source verifier and judge
-  use Google `gemini-3.1-flash-lite`. Same-model verification is deliberately
+  use Google `gemma-4-26b-a4b-it`. Same-model verification is deliberately
   labelled as non-independent. Evaluation concurrency is two; individual judge
   requests have 90-second timeouts and complete metrics have 360-second deadlines.
 - Existing PDFs, indexes, extraction caches, datasets and results are in `docs/`,
@@ -66,6 +74,11 @@ Reports retain real per-sample evidence, valid/failed/skipped counts, provider
 errors and latency. Missing scores remain unavailable. No automatic overall
 winner is invented. Structured judging steps and completed answers are cached;
 strategy scheduling alternates to reduce provider-quota bias.
+Drafting retries structured HTTP 500/502/503/504 errors with exponential backoff
+within the same request deadline. `SYNTHETIC_MAX_RETRIES` defaults to one (0–2)
+and `SYNTHETIC_RETRY_DELAY_SECONDS` to one second (0.1–5). Authentication/quota
+errors are not retried; cancellation works during backoff. Actual drafting
+request attempts are retained separately from candidate-operation counts.
 
 One-to-three-PDF upload supports separate preparation or one combined workspace.
 Batch evaluation saves a dataset/report per original or one combined report.

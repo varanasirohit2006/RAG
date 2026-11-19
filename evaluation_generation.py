@@ -186,6 +186,28 @@ async def _request(awaitable, *, timeout, cancellation_event):
             await asyncio.gather(task, return_exceptions=True)
 
 
+async def _request_with_retries(factory, *, timeout, cancellation_event,
+                                max_retries=0, retry_delay=1, on_retry=None):
+    """Retry transient server failures within one deadline; never retry quota/auth errors."""
+    deadline = time.monotonic() + timeout
+    for attempt in range(max_retries + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"Automatic evaluation model request exceeded {timeout} seconds.")
+        try:
+            return await _request(factory(), timeout=remaining, cancellation_event=cancellation_event)
+        except Exception as exc:
+            code = provider_status_code(exc)
+            delay = retry_delay * 2 ** attempt
+            if (code not in {500, 502, 503, 504} or attempt == max_retries
+                    or deadline - time.monotonic() <= delay):
+                raise
+            if on_retry:
+                on_retry(code, attempt + 1)
+            await _request(asyncio.sleep(delay), timeout=deadline - time.monotonic(),
+                           cancellation_event=cancellation_event)
+
+
 def _validate_quotes(draft, sources):
     by_id = {source["chunk_id"]: source for source in sources}
     for evidence in draft.supporting_quotes:
@@ -299,15 +321,20 @@ async def generate_evaluation_dataset(
     timeout = int(os.getenv("SYNTHETIC_GENERATION_TIMEOUT", "60"))
     tokens = int(os.getenv("SYNTHETIC_GENERATION_MAX_TOKENS", "4096"))
     concurrency = int(os.getenv("SYNTHETIC_GENERATION_CONCURRENCY", "2"))
+    draft_retries = int(os.getenv("SYNTHETIC_MAX_RETRIES", "1"))
+    retry_delay = float(os.getenv("SYNTHETIC_RETRY_DELAY_SECONDS", "1"))
     if not 15 <= timeout <= 300 or not 1024 <= tokens <= 8192 or not 1 <= concurrency <= 4:
         raise EvaluationDataError("Automatic generation settings require timeout 15-300s, tokens 1024-8192, and concurrency 1-4.")
+    if not 0 <= draft_retries <= 2 or not 0.1 <= retry_delay <= 5:
+        raise EvaluationDataError("Automatic drafting retries require SYNTHETIC_MAX_RETRIES 0-2 and SYNTHETIC_RETRY_DELAY_SECONDS 0.1-5.")
     configuration = {
         "schema_version": SCHEMA_VERSION, "document_hash": expected_hash,
         "corpus_version": index_manifest.get("corpus_version"),
         "source_fingerprint": _hash(sources), "question_count": question_count,
         "implementation_revision": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "draft_provider": provider, "draft_model": model, "draft_timeout": timeout,
-        "draft_max_tokens": tokens, "verifier": asdict(verifier_settings),
+        "draft_max_tokens": tokens, "draft_max_retries": draft_retries,
+        "draft_retry_delay_seconds": retry_delay, "verifier": asdict(verifier_settings),
         "independent_reference_verification": not same_model,
         "source_documents": index_manifest.get('source_documents', []),
         "verifier_revision": hashlib.sha256(Path(__file__).with_name("evaluation_judge.py").read_bytes()).hexdigest(),
@@ -330,6 +357,7 @@ async def generate_evaluation_dataset(
         request_failures = {"draft": 0, "verifier": 0}
         rejection_sequence = 0
         provider_limit = None
+        draft_request_attempts = 0
 
         def rejection_record(candidate_number, stage, model_name, reason, *, request_failed=False,
                              status_code=None, timed_out=False):
@@ -340,10 +368,19 @@ async def generate_evaluation_dataset(
                     "sequence": rejection_sequence, "provider_status_code": status_code,
                     "model_request_timed_out": timed_out}
 
-        async def model_request(awaitable, request_timeout, stage):
+        async def model_request(factory, request_timeout, stage):
             nonlocal provider_limit
+            def request_attempt():
+                nonlocal draft_request_attempts
+                if stage == 'draft':
+                    draft_request_attempts += 1
+                return factory()
             try:
-                result = await _request(awaitable, timeout=request_timeout, cancellation_event=cancellation_event)
+                # The verifier already has its own bounded retry/cache implementation.
+                result = await _request_with_retries(request_attempt, timeout=request_timeout,
+                    cancellation_event=cancellation_event, max_retries=draft_retries if stage == 'draft' else 0,
+                    retry_delay=retry_delay,
+                    on_retry=lambda code, attempt: emit(f"Retrying {model} drafting after HTTP {code} ({attempt}/{draft_retries})"))
             except Exception as exc:
                 request_failures[stage] += 1
                 if provider_status_code(exc) == 429:
@@ -401,7 +438,7 @@ async def generate_evaluation_dataset(
                 try:
                     emit(f"Drafting candidate {index + 1}; {done}/{question_count} source-verified questions")
                     work_counts["drafting_operations"] += 1
-                    response = await model_request(draft_model.ainvoke([HumanMessage(content=prompt)]), timeout, "draft")
+                    response = await model_request(lambda: draft_model.ainvoke([HumanMessage(content=prompt)]), timeout, "draft")
                     stage = "draft_validation"
                     reason = str((getattr(response, "response_metadata", None) or {}).get("finish_reason", "")).upper()
                     if reason in {"MAX_TOKENS", "LENGTH"}:
@@ -428,7 +465,7 @@ async def generate_evaluation_dataset(
                     emit(f"Independently checking candidate {index + 1} against its source evidence")
                     work_counts["verification_operations"] += 1
                     stage, active_model = "verification_request", verifier_settings.model
-                    verdict = await model_request(verifier.llm.agenerate(verify_prompt, SourceVerdict), verifier_settings.timeout, "verifier")
+                    verdict = await model_request(lambda: verifier.llm.agenerate(verify_prompt, SourceVerdict), verifier_settings.timeout, "verifier")
                     stage = "verification_validation"
                     verdict = SourceVerdict.model_validate(verdict)
                     if not all((verdict.supported, verdict.unambiguous, verdict.all_evidence_relevant, verdict.category_valid)):
@@ -503,6 +540,7 @@ async def generate_evaluation_dataset(
                 failure = {"schema_version": SCHEMA_VERSION, "status": "failed", "document_hash": expected_hash,
                            "configuration": configuration, "requested_questions": question_count,
                            "accepted_questions": 0, "rejected_candidates": rejected, "work_counts": work_counts,
+                           "draft_request_attempts": draft_request_attempts,
                            "verifier_usage": dict(getattr(verifier.llm, "usage", {})),
                            "created_at": datetime.now(timezone.utc).isoformat(),
                            "seconds": round(time.perf_counter() - started, 3)}
@@ -542,6 +580,7 @@ async def generate_evaluation_dataset(
                     "created_at": datetime.now(timezone.utc).isoformat(), "configuration": configuration,
                     "requested_questions": question_count, "verified_questions": len(accepted),
                     "rejected_candidates": rejected, "work_counts": work_counts,
+                    "draft_request_attempts": draft_request_attempts,
                     "verifier_usage": dict(getattr(verifier.llm, "usage", {})),
                     "provider_limit": provider_limit,
                     "seconds": round(time.perf_counter() - started, 3),

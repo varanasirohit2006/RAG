@@ -34,19 +34,19 @@ configure your credentials. Preserve existing API keys when changing settings.
 ```dotenv
 GOOGLE_API_KEY=your_google_key
 GENERATION_PROVIDER=google
-GENERATION_MODEL=gemini-3.1-flash-lite
+GENERATION_MODEL=gemma-4-26b-a4b-it
 
 EVALUATION_PROVIDER=google
-EVALUATION_MODEL=gemini-3.1-flash-lite
+EVALUATION_MODEL=gemma-4-26b-a4b-it
 EVALUATION_REASONING_EFFORT=minimal
 EVALUATION_CONCURRENCY=2
 EVALUATION_METRIC_TIMEOUT=360
 SYNTHETIC_ALLOW_SAME_MODEL_VERIFICATION=true
 ```
 
-The current preset uses Gemini 3.1 Flash Lite for question drafting, answers,
-source-reference checks and Ragas scoring. Google API usage is billed to the
-configured key. Same-model source checking is explicitly labelled and is not
+The current preset uses Google Gemma 4 26B A4B for question drafting, answers,
+source-reference checks and Ragas scoring. Provider quotas still apply.
+Same-model source checking is explicitly labelled and is not
 independent verification. Set a different judge and disable the same-model flag
 when an independent comparison is needed. Cohere reranking is optional and uses
 `COHERE_API_KEY` with the settings in `.env.example`.
@@ -192,6 +192,13 @@ Full comparisons can require many judge calls per question and strategy; free
 provider quotas can be exhausted before all metrics finish. Start with a small
 preview to confirm model availability. HTTP 429/503/504 errors are provider
 failures, not evidence of poor retrieval or answer quality.
+
+Automatic drafting retries temporary HTTP 500/502/503/504 failures once by default,
+using exponential backoff within the original request deadline. Configure
+`SYNTHETIC_MAX_RETRIES` (0–2) and `SYNTHETIC_RETRY_DELAY_SECONDS` (0.1–5).
+Cancellation remains available during the delay; HTTP 429 and authentication
+errors do not trigger these retries. A different model can also encounter provider
+availability or quota errors.
 
 Missing reranker configuration and reranker fallback remain explicit in reports.
 No paid judge is silently substituted for a configured free OpenRouter model.

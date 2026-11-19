@@ -14,7 +14,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 
-DEFAULT_GENERATION_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_GENERATION_MODEL = "gemma-4-26b-a4b-it"
 DEFAULT_OPENROUTER_GENERATION_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 # Confirmed image-input models in OpenRouter's model catalog. Unknown routes use text.
 OPENROUTER_IMAGE_MODELS = {"nvidia/nemotron-3.5-super-vl:free",

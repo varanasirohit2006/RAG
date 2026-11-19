@@ -22,7 +22,7 @@ def runtime(monkeypatch, tmp_path):
     monkeypatch.setenv("GENERATION_MODEL", "test-drafter")
     monkeypatch.setenv("EVALUATION_MODEL", "test-verifier")
     monkeypatch.setenv("EVALUATION_PROVIDER", "google")
-    for name in ("SYNTHETIC_GENERATION_PROVIDER", "SYNTHETIC_GENERATION_MODEL", "SYNTHETIC_GENERATION_TIMEOUT", "SYNTHETIC_GENERATION_MAX_TOKENS", "SYNTHETIC_GENERATION_CONCURRENCY", 'SYNTHETIC_ALLOW_SAME_MODEL_VERIFICATION'):
+    for name in ("SYNTHETIC_GENERATION_PROVIDER", "SYNTHETIC_GENERATION_MODEL", "SYNTHETIC_GENERATION_TIMEOUT", "SYNTHETIC_GENERATION_MAX_TOKENS", "SYNTHETIC_GENERATION_CONCURRENCY", 'SYNTHETIC_ALLOW_SAME_MODEL_VERIFICATION', 'SYNTHETIC_MAX_RETRIES', 'SYNTHETIC_RETRY_DELAY_SECONDS'):
         monkeypatch.delenv(name, raising=False)
     docs = [Document(page_content=f"Invoice {index} total is {100 + index}.45 USD. Payment is due within thirty calendar days.",
                      metadata={"chunk_id": f"c{index}", "pages": [index]}) for index in range(1, 7)]
@@ -486,3 +486,81 @@ def test_temporary_failure_message_reports_availability_without_blame_on_credent
     assert all(item["provider_status_code"] == code for item in diagnostic["rejected_candidates"])
     assert all(item["model_request_timed_out"] == (code is None) for item in diagnostic["rejected_candidates"])
     assert_no_valid_dataset(runtime)
+
+
+class TemporaryProviderError(Exception):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(f'Provider returned HTTP {code}')
+
+
+def test_temporary_draft_failure_retries_same_source_before_verification(runtime, monkeypatch):
+    original = generation._build_clients
+    attempts, progress = [], []
+    monkeypatch.setenv('SYNTHETIC_RETRY_DELAY_SECONDS', '0.1')
+    def clients(configuration):
+        model, verifier = original(configuration)
+        invoke = model.ainvoke
+        async def retry_once(messages):
+            attempts.append(messages[0].content)
+            if len(attempts) == 1:
+                raise TemporaryProviderError(503)
+            return await invoke(messages)
+        model.ainvoke = retry_once
+        return model, verifier
+    monkeypatch.setattr(generation, '_build_clients', clients)
+    dataset = generate(runtime, question_count=1, progress_callback=lambda done, total, message: progress.append(message))
+    assert len(dataset['questions']) == 1 and runtime[3]['verifier_calls'] == 1
+    assert len(attempts) == 2 and attempts[0] == attempts[1]
+    assert dataset['provenance']['draft_request_attempts'] == 2
+    assert dataset['provenance']['work_counts']['drafting_operations'] == 1
+    assert any('Retrying' in message and '503' in message for message in progress)
+
+
+@pytest.mark.parametrize('code', [401, 403, 429, 503])
+def test_draft_retries_are_bounded_and_never_repeat_quota_or_auth_errors(runtime, monkeypatch, code):
+    original = generation._build_clients
+    attempts = []
+    monkeypatch.setenv('SYNTHETIC_RETRY_DELAY_SECONDS', '0.1')
+    def clients(configuration):
+        model, verifier = original(configuration)
+        async def unavailable(messages):
+            attempts.append(messages[0].content)
+            raise TemporaryProviderError(code)
+        model.ainvoke = unavailable
+        return model, verifier
+    monkeypatch.setattr(generation, '_build_clients', clients)
+    with pytest.raises(EvaluationDataError):
+        generate(runtime, question_count=1)
+    # Two candidate operations; 429 halts the entire candidate queue immediately.
+    assert len(attempts) == (1 if code == 429 else 4 if code == 503 else 2)
+    assert runtime[3]['verifier_calls'] == 0
+    diagnostic = json.loads(next(runtime[1].glob('automatic-*.failure.json')).read_text(encoding='utf-8'))
+    assert diagnostic['draft_request_attempts'] == len(attempts)
+    assert all(item['provider_status_code'] == code for item in diagnostic['rejected_candidates'])
+    assert_no_valid_dataset(runtime)
+
+
+def test_retry_delay_does_not_extend_the_request_deadline():
+    calls = []
+    async def unavailable():
+        calls.append(True)
+        raise TemporaryProviderError(503)
+    with pytest.raises(TemporaryProviderError):
+        asyncio.run(generation._request_with_retries(unavailable, timeout=0.05,
+            cancellation_event=None, max_retries=2, retry_delay=1))
+    assert len(calls) == 1
+
+
+def test_cancellation_stops_a_draft_during_retry_backoff():
+    calls, cancelled = [], threading.Event()
+    async def unavailable():
+        calls.append(True)
+        raise TemporaryProviderError(503)
+    async def run():
+        asyncio.get_running_loop().call_later(0.01, cancelled.set)
+        await generation._request_with_retries(unavailable, timeout=10,
+            cancellation_event=cancelled, max_retries=2, retry_delay=2)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(run())
+    assert len(calls) == 1

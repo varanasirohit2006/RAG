@@ -361,7 +361,7 @@ async def run_evaluation(
     relevance = {case.id: resolve_relevance(case, all_docs) for case in cases}
     corpus_version = index_manifest.get("corpus_version") or _hash(sorted(document_id(document) for document in all_docs))
     generator_provider = os.getenv("GENERATION_PROVIDER", "google")
-    generator_model = os.getenv("GENERATION_MODEL", "gemini-3.5-flash-lite")
+    generator_model = os.getenv("GENERATION_MODEL", "gemma-4-26b-a4b-it")
     judge_settings = JudgeSettings.from_env() if profile != "retrieval" else None
     metric_timeout = int(os.getenv('EVALUATION_METRIC_TIMEOUT', str(max(300, judge_settings.timeout * 4)))) if judge_settings else None
     if metric_timeout is not None and not 15 <= metric_timeout <= 1200:

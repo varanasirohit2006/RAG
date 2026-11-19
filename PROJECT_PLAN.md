@@ -11,7 +11,7 @@ Updated: 19 November 2026. See README for operation and HANDOFF for continuation
 - Private accounts, owned documents/results, durable jobs and reproducible reports.
 - One computer/server initially; zero hosting subscription cost. Model API usage,
   electricity, storage and connectivity are separate costs.
-- The current user-selected model is Google `gemini-3.1-flash-lite` for drafting,
+- The current user-selected model is Google `gemma-4-26b-a4b-it` for drafting,
   answers, source checking and judging. Same-model checks are labelled as
   non-independent; configuration supports a separately selected judge.
 
@@ -29,8 +29,9 @@ Updated: 19 November 2026. See README for operation and HANDOFF for continuation
 | Accounts | Configurable OIDC login/logout with PKCE and signature/claim validation, issuer/subject identities, durable expiring/revocable sessions and private API ownership. Browser caches/jobs reset on account changes. |
 | Packaging | React/Python Linux Dockerfile, localhost-bound Compose, persistent volumes, non-root execution, pinned embedding revision and API health check. Linux execution remains unverified. |
 
-The latest offline checks passed all 249 regression tests and the production
-React build. Earlier checks also covered desktop/mobile browser flows.
+The latest offline checks passed all 257 regression tests; the production React
+build passed at the preceding cleanup checkpoint. Earlier checks also covered
+desktop/mobile browser flows.
 Live provider availability and judge calibration require separate evidence.
 Existing local documents/results and credentials are retained and ignored by Git.
 

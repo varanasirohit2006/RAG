@@ -44,7 +44,7 @@ class JudgeQuotaExceeded(RuntimeError):
 @dataclass(frozen=True)
 class JudgeSettings:
     provider: str = "google"
-    model: str = "gemma-4-31b-it"
+    model: str = "gemma-4-26b-a4b-it"
     timeout: int = 90
     max_retries: int = 1
     max_tokens: int = 4096
@@ -72,7 +72,7 @@ class JudgeSettings:
     def from_env(cls):
         return cls(
             provider=os.getenv("EVALUATION_PROVIDER", "google"),
-            model=os.getenv("EVALUATION_MODEL", "gemma-4-31b-it"),
+            model=os.getenv("EVALUATION_MODEL", "gemma-4-26b-a4b-it"),
             timeout=int(os.getenv("EVALUATION_TIMEOUT", "90")),
             max_retries=int(os.getenv("EVALUATION_MAX_RETRIES", "1")),
             max_tokens=int(os.getenv("EVALUATION_MAX_TOKENS", "4096")),
