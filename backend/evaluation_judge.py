@@ -10,9 +10,10 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 
-from evaluation_data import validate_score
-from provider_limits import (cache_root, current_openrouter_limit, ensure_openrouter_available,
-                             limit_message, provider_status_code, read_json, record_openrouter_limit, write_json)
+from backend.evaluation_data import validate_score
+from backend.provider_limits import (cache_root, ensure_openrouter_available,
+                             limit_message, provider_status_code, record_openrouter_limit)
+from backend.files import read_json, write_json
 
 JUDGE_API_KEYS = {"google": "GOOGLE_API_KEY", "openai": "OPENAI_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
 
@@ -68,7 +69,7 @@ class JudgeSettings:
 
 def _parse_structured_text(content, response_model):
     """Parse one complete schema-valid JSON answer, never a truncated partial verdict."""
-    from generation_runtime import content_text
+    from backend.generation_runtime import content_text
 
     text = content_text(content)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
@@ -104,10 +105,6 @@ def create_google_json_llm(settings, *, model=None):
             options.update(reasoning_effort=settings.reasoning_effort, include_thoughts=False)
         model = ChatGoogleGenerativeAI(**options)
     return create_json_judge_llm(settings, model=model, response_cache=cache_root() / 'judge_responses' if owned else None)
-
-
-def create_gemma_json_llm(settings, *, model=None):
-    return create_google_json_llm(settings, model=model)
 
 
 def create_ollama_json_llm(settings, *, model=None):
@@ -153,7 +150,7 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
     """Schema-validated JSON judging without tool calls or multiple candidates."""
     from ragas.llms.base import InstructorBaseRagasLLM
     from langchain_core.messages import HumanMessage
-    from generation_runtime import ollama_json_schema
+    from backend.generation_runtime import ollama_json_schema
 
     class JSONJudgeLLM(InstructorBaseRagasLLM):
         def __init__(self):
@@ -290,7 +287,7 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
 
         async def close(self):
             if settings.provider == 'ollama':
-                from generation_runtime import close_ollama_model
+                from backend.generation_runtime import close_ollama_model
                 await close_ollama_model(model)
                 return
             client = getattr(model, "client", None)

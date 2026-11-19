@@ -15,8 +15,8 @@ from functools import lru_cache
 
 from langchain_core.documents import Document
 
-from generation_runtime import document_key, document_payload
-from index_runtime import read_index_manifest
+from backend.generation_runtime import document_key, document_payload
+from backend.index_runtime import read_index_manifest
 
 _cache_lock = threading.Lock()
 _retrievers = OrderedDict()

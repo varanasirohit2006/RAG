@@ -13,7 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
-from document_extraction import extract_document
+from backend.document_extraction import extract_document
+from backend.files import PROJECT_ROOT
 
 EXTRACTION_CACHE_VERSION = 2
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rag-job")
@@ -24,7 +25,7 @@ class JobCancelled(RuntimeError):
 
 
 class BackgroundJob:
-    """Session-owned work; workers never call Streamlit or access session state."""
+    """Cancellable background work with thread-safe progress snapshots."""
 
     def __init__(self, target, *, key=None, on_change=None):
         self.key = key
@@ -112,7 +113,7 @@ def extraction_cache_key(document_hash, settings):
 
 
 def extract_with_cache(file_path, document_hash, settings, *, progress_callback=None,
-                       cancellation_event=None, cache_dir=".cache/extractions"):
+                       cancellation_event=None, cache_dir=PROJECT_ROOT / ".cache" / "extractions"):
     from unstructured.staging.base import elements_from_dicts, elements_to_dicts
 
     key = extraction_cache_key(document_hash, settings)
@@ -154,20 +155,21 @@ def extract_with_cache(file_path, document_hash, settings, *, progress_callback=
 
 
 def prepare_document(file_path, document_hash, index_key, settings, job, *, source_documents=None, storage_root=None):
-    from rag_pipeline import get_or_create_vector_store
+    from backend.rag_pipeline import get_or_create_vector_store
 
+    root = Path(storage_root) if storage_root else PROJECT_ROOT
     started = time.perf_counter()
     elements, hit = extract_with_cache(file_path, document_hash, settings,
-        progress_callback=job.progress, cancellation_event=job.cancellation_event)
+        progress_callback=job.progress, cancellation_event=job.cancellation_event,
+        cache_dir=root / ".cache" / "extractions")
     extraction_seconds = time.perf_counter() - started
     job.check_cancelled()
     job.progress(0, 1, "Preparing document search index")
     started = time.perf_counter()
     directory = f"db/chroma_{index_key}"
-    options = {'source_documents': source_documents} if source_documents else {}
-    target = str(Path(storage_root) / directory) if storage_root else directory
+    target = str(root / directory)
     database = get_or_create_vector_store(elements, target, document_hash=document_hash,
-                                          progress_callback=job.progress, **options)
+                                          progress_callback=job.progress, source_documents=source_documents)
     return {"elements": elements, "stats": dict(Counter(element.category for element in elements)),
             "database": database, "index_path": directory, "extraction_cache_hit": hit,
             "timings": {"extraction_seconds": round(extraction_seconds, 3),
@@ -175,7 +177,8 @@ def prepare_document(file_path, document_hash, index_key, settings, job, *, sour
 
 
 def answer_question(database, query, job, *, use_reranker=True):
-    from rag_pipeline import generate_final_answer, retrieve_documents
+    from backend.generation_runtime import generate_final_answer
+    from backend.retrieval_runtime import retrieve_documents
 
     job.progress(0, 3, "Finding relevant document passages")
     started = time.perf_counter()
@@ -193,8 +196,8 @@ def answer_question(database, query, job, *, use_reranker=True):
     return {"query": query, "answer": answer, "documents": documents, "timings": timings}
 
 
-def evaluate_document(database_path, dataset, document_hash, profile, job, *, force=False, output_dir='evaluation_runs'):
-    from advanced_evaluation import run_evaluation
+def evaluate_document(database_path, dataset, document_hash, profile, job, *, force=False, output_dir=PROJECT_ROOT / 'evaluation_runs'):
+    from backend.advanced_evaluation import run_evaluation
 
     return asyncio.run(run_evaluation(db_path=database_path, dataset=dataset,
         expected_document_hash=document_hash, profile=profile, progress_callback=job.progress,

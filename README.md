@@ -73,7 +73,7 @@ the full schema and exact source quotes are still validated before scoring.
 Start the app:
 
 ```powershell
-.\.venv\Scripts\python.exe -B run_app.py
+.\.venv\Scripts\python.exe -B -m backend
 ```
 
 Open the printed URL, normally **http://127.0.0.1:8501**. The launcher warms local
@@ -273,7 +273,7 @@ import template from that page; inspect and export test sets from Results.
 CLI evaluation is also available:
 
 ```powershell
-.\.venv\Scripts\python.exe -B advanced_evaluation.py --db "db/chroma_your_index" --dataset "questions.json" --profile full
+.\.venv\Scripts\python.exe -B -m backend.advanced_evaluation --db "db/chroma_your_index" --dataset "questions.json" --profile full
 ```
 
 ## OCR and performance
@@ -288,7 +288,7 @@ extraction is documented by `requirements-hires.txt` and the settings in
 Check OCR without making model API calls:
 
 ```powershell
-.\.venv\Scripts\python.exe -B ocr_doctor.py --self-test
+.\.venv\Scripts\python.exe -B -m backend.ocr_doctor --self-test
 ```
 
 Use `--pdf`, `--reference` and `--output` to measure character/word error rates
@@ -348,19 +348,29 @@ coordination, TLS and a hosting option validated for this workload.
 ## Project layout
 
 ```text
-frontend/src/       React pages, navigation and shared UI components
-api/                FastAPI routes, ownership, jobs and catalog persistence
-*_runtime.py        OCR, indexing, retrieval, generation and judge services
-advanced_evaluation.py       Ragas scoring and report generation
-evaluation_generation.py    Source-verified automatic question generation
-tests/              Backend regression tests
-project_docs/       Original metric images and evaluation handbook DOCX
-HANDOFF.md          Current state and continuation notes
-PROJECT_PLAN.md     Roadmap and release acceptance checks
+backend/                    All application Python; launched with python -m backend
+  api/                      FastAPI routes, accounts, jobs and SQLite catalog
+  rag_pipeline.py           Embeddings, source-preserving chunks and index preparation
+  document_extraction.py    Native PDF and optional layout extraction
+  ocr_*.py                  OCR engine, accuracy measurements and diagnostic CLI
+  pdf_batches.py            Combined PDFs and original-file/page provenance
+  processing_jobs.py        Background ingestion, answers and evaluation work
+  *_runtime.py              Indexing, retrieval and answer-generation services
+  evaluation_*.py           Test data, question drafting, judges and diagnostics
+  advanced_evaluation.py    Ragas orchestration and evaluation CLI
+  provider_limits.py        Provider errors and quota state
+  files.py                  Repository paths and shared atomic JSON persistence
+frontend/src/               React pages, navigation and shared UI components
+tests/                      Offline backend regression tests
+project_docs/               Original metric images and evaluation handbook DOCX
+requirements*.txt           Runtime, development and optional extraction dependencies
+HANDOFF.md                  Current state and continuation notes
+PROJECT_PLAN.md             Roadmap and release acceptance checks
 ```
 
 Runtime data is created as needed in `docs/`, `db/`, `.cache/`,
 `evaluation_datasets/` and `evaluation_runs/`; it is excluded from Git. Existing
 local documents and evaluation history are retained. Disposable QA output and
-generated build metadata can be removed without deleting saved work. The retired
-Streamlit interface has been removed.
+generated build metadata can be removed without deleting saved work. Storage
+paths remain at the repository root when backend modules are imported from
+another directory. Python module/CLI commands above replace the old root scripts.

@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.documents import Document
 
-import advanced_evaluation as evaluation
-from evaluation_data import (
+from backend import advanced_evaluation as evaluation, generation_runtime
+from backend.evaluation_data import (
     EvaluationDataError, lexical_reference_metrics, load_evaluation_dataset,
     resolve_relevance, retrieval_metrics, validate_score,
 )
@@ -128,10 +128,8 @@ def test_invalid_scores_never_enter_summary(value):
 def test_preview_declares_subset_and_keeps_refusal_case(monkeypatch):
     monkeypatch.setenv("EVALUATION_PREVIEW_QUESTIONS", "2")
     data = [row(id=f"q{i}") for i in range(5)] + [row(id="refusal", answerable=False, reference_pages=[])]
-    plan = evaluation.evaluation_plan(data, profile="preview")
     selected, strategies = evaluation._selection(load_evaluation_dataset(data), "preview")
-    assert plan["total_questions"] == 6
-    assert plan["sampled_questions"] == 2
+    assert len(selected) == 2
     assert any(not case.answerable for case in selected)
     assert strategies == ("Production",)
 
@@ -139,9 +137,8 @@ def test_preview_declares_subset_and_keeps_refusal_case(monkeypatch):
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     import dotenv
-    import rag_pipeline
-    import retrieval_runtime
-    import generation_runtime
+    from backend import rag_pipeline
+    from backend import retrieval_runtime
 
     monkeypatch.setattr(dotenv, "load_dotenv", lambda: False)
     monkeypatch.setenv("EVALUATION_CONCURRENCY", "2")
@@ -179,7 +176,7 @@ def runtime(tmp_path, monkeypatch):
         with lock:
             state["active"] -= 1
         return "123.45 USD"
-    monkeypatch.setattr(rag_pipeline, "generate_final_answer", generate)
+    monkeypatch.setattr(generation_runtime, "generate_final_answer", generate)
     class Judge:
         def __init__(self, *args, **kwargs):
             pass
@@ -271,12 +268,11 @@ def test_embedding_revision_invalidates_completed_runs_and_metric_cache(runtime)
 
 
 def test_failed_generation_keeps_duration_and_skips_quality_scores(runtime, monkeypatch):
-    import rag_pipeline
     db_dir, output, state = runtime
     def unavailable(*args, **kwargs):
         time.sleep(0.015)
         raise RuntimeError("Provider unavailable (503)")
-    monkeypatch.setattr(rag_pipeline, "generate_final_answer", unavailable)
+    monkeypatch.setattr(generation_runtime, "generate_final_answer", unavailable)
     summary = asyncio.run(evaluation.run_evaluation(str(db_dir), dataset=[row()], output_dir=output))
     assert summary.attrs["status"] == "failed"
     assert summary.iloc[0]["generation_seconds"] >= 0.015
@@ -287,7 +283,7 @@ def test_failed_generation_keeps_duration_and_skips_quality_scores(runtime, monk
 
 
 def test_failed_retrieval_keeps_duration_and_starts_no_model_work(runtime, monkeypatch):
-    import retrieval_runtime
+    from backend import retrieval_runtime
     db_dir, output, state = runtime
     retriever = retrieval_runtime.get_retrievers(None)[0]
     def unavailable(question):
@@ -314,7 +310,6 @@ def test_retrieval_profile_makes_no_generation_or_judge_calls(runtime):
 
 
 def test_cancellation_stops_queued_generation_and_judging(runtime, monkeypatch):
-    import rag_pipeline
     db_dir, output, state = runtime
     cancellation = threading.Event()
     monkeypatch.setenv("EVALUATION_CONCURRENCY", "1")
@@ -322,7 +317,7 @@ def test_cancellation_stops_queued_generation_and_judging(runtime, monkeypatch):
         state["generation_calls"] += 1
         cancellation.set()
         return "123.45 USD"
-    monkeypatch.setattr(rag_pipeline, "generate_final_answer", generate)
+    monkeypatch.setattr(generation_runtime, "generate_final_answer", generate)
     data = [row(id="q1"), row(id="q2", question="State the amount.")]
     summary = asyncio.run(evaluation.run_evaluation(
         str(db_dir), dataset=data, output_dir=output, cancellation_event=cancellation,
@@ -335,7 +330,7 @@ def test_cancellation_stops_queued_generation_and_judging(runtime, monkeypatch):
 
 def test_gemma_adapter_repairs_json_without_tools_or_multiple_candidates():
     from pydantic import BaseModel
-    from evaluation_judge import JudgeSettings, create_gemma_json_llm
+    from backend.evaluation_judge import JudgeSettings, create_google_json_llm
     from ragas.llms.base import InstructorBaseRagasLLM
 
     class Verdict(BaseModel):
@@ -349,7 +344,7 @@ def test_gemma_adapter_repairs_json_without_tools_or_multiple_candidates():
             text = 'not JSON' if len(self.calls) == 1 else '```json\n{"faithful":true,"reason":"Source supports it."}\n```'
             return SimpleNamespace(content=[{"text": text}], response_metadata={"finish_reason": "STOP"})
     model = Model()
-    adapter = create_gemma_json_llm(JudgeSettings(model="gemma-4-31b-it"), model=model)
+    adapter = create_google_json_llm(JudgeSettings(model="gemma-4-31b-it"), model=model)
     assert isinstance(adapter, InstructorBaseRagasLLM)
     result = asyncio.run(adapter.agenerate("Judge the statement.", Verdict))
     assert result.faithful is True
@@ -360,21 +355,21 @@ def test_gemma_adapter_repairs_json_without_tools_or_multiple_candidates():
 
 def test_gemma_adapter_does_not_score_truncated_verdicts():
     from pydantic import BaseModel
-    from evaluation_judge import JudgeSettings, create_gemma_json_llm
+    from backend.evaluation_judge import JudgeSettings, create_google_json_llm
 
     class Verdict(BaseModel):
         faithful: bool
     class Model:
         async def ainvoke(self, messages):
             return SimpleNamespace(content='{"faithful":true}', response_metadata={"finish_reason": "MAX_TOKENS"})
-    adapter = create_gemma_json_llm(JudgeSettings(), model=Model())
+    adapter = create_google_json_llm(JudgeSettings(), model=Model())
     with pytest.raises(ValueError, match="truncated"):
         asyncio.run(adapter.agenerate("Judge the statement.", Verdict))
     assert adapter.usage["structured_generation_requests"] == 1
 
 
 def test_scheduling_alternates_strategies_instead_of_using_keyword_first(runtime, monkeypatch):
-    import retrieval_runtime
+    from backend import retrieval_runtime
     db, output, state = runtime
     monkeypatch.setenv('EVALUATION_CONCURRENCY', '1')
     order = []

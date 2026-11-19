@@ -48,4 +48,4 @@ EXPOSE 8501
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/api/health', timeout=3)"
 
-CMD ["python", "-B", "run_app.py", "--host", "0.0.0.0", "--port", "8501"]
+CMD ["python", "-B", "-m", "backend", "--host", "0.0.0.0", "--port", "8501"]

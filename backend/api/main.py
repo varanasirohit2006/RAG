@@ -17,13 +17,14 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from api.runtime import Jobs, TERMINAL, clean, read_summary, retrieval_experiment, source
-from api.storage import Catalog
-from api.auth import Authentication, AuthSettings, PUBLIC_API_PATHS
-from document_extraction import ExtractionSettings
-from evaluation_data import EvaluationDataError, dataset_template, load_evaluation_dataset
-from processing_jobs import answer_question, evaluate_document, extraction_cache_key, prepare_document
-from pdf_batches import MAX_BATCH_PDFS, BatchStageJob, merge_pdfs
+from backend.api.runtime import Jobs, TERMINAL, clean, read_summary, retrieval_experiment, source
+from backend.api.storage import Catalog
+from backend.api.auth import Authentication, AuthSettings, PUBLIC_API_PATHS
+from backend.document_extraction import ExtractionSettings
+from backend.evaluation_data import EvaluationDataError, dataset_template, load_evaluation_dataset
+from backend.processing_jobs import answer_question, evaluate_document, extraction_cache_key, prepare_document
+from backend.pdf_batches import MAX_BATCH_PDFS, BatchStageJob, merge_pdfs
+from backend.files import PROJECT_ROOT
 
 
 class Question(BaseModel):
@@ -64,7 +65,7 @@ class BatchEvaluation(AutomaticEvaluation):
 
 async def generate_dataset(*args, **kwargs):
     """Lazy import keeps ordinary API startup free of generation work."""
-    from evaluation_generation import generate_evaluation_dataset
+    from backend.evaluation_generation import generate_evaluation_dataset
     return await generate_evaluation_dataset(*args, **kwargs)
 
 
@@ -86,7 +87,7 @@ class Retrieval(Question):
 
 
 def create_app(root=None, *, warm=True, auth_transport=None):
-    root = Path(root or Path(__file__).resolve().parents[1]).resolve()
+    root = Path(root or PROJECT_ROOT).resolve()
     load_dotenv(root / '.env')
     auth_settings = AuthSettings.from_env()
     catalog = Catalog(root / 'db' / 'web_catalog.sqlite3')
@@ -96,7 +97,7 @@ def create_app(root=None, *, warm=True, auth_transport=None):
     @asynccontextmanager
     async def lifespan(app):
         if warm:
-            from bootstrap import warm_runtime
+            from backend.bootstrap import warm_runtime
             warm_runtime()
         try:
             yield
@@ -150,12 +151,12 @@ def create_app(root=None, *, warm=True, auth_transport=None):
         return {k: v for k, v in doc.items() if k not in ('file_path', 'index_path')}
 
     def database(doc):
-        from index_runtime import index_is_ready
+        from backend.index_runtime import index_is_ready
         if not doc.get('index_path') or not index_is_ready(root / doc['index_path'], document_hash=doc['sha256']):
             raise HTTPException(409, 'Prepare this document before searching or evaluating it.')
         path = str(root / doc['index_path'])
         if path not in databases:
-            from rag_pipeline import load_vector_store
+            from backend.rag_pipeline import load_vector_store
             databases[path] = load_vector_store(path)
         return databases[path]
 
@@ -175,8 +176,8 @@ def create_app(root=None, *, warm=True, auth_transport=None):
         key = hashlib.sha256(identity.encode()).hexdigest()
         persist_doc(owner, doc, status='preparing', preparation_error=None)
         try:
-            options = {'source_documents': sources, 'storage_root': root} if sources else {}
-            result = prepare_document(root / doc['file_path'], doc['sha256'], key, settings, job, **options)
+            result = prepare_document(root / doc['file_path'], doc['sha256'], key, settings, job,
+                                      storage_root=root, source_documents=sources)
             databases[str(root / result['index_path'])] = result['database']
             return persist_doc(owner, doc, status='ready', index_path=result['index_path'], stats=result['stats'],
                                timings=result['timings'], extraction_cache_hit=result['extraction_cache_hit'], preparation_error=None)
@@ -253,7 +254,7 @@ def create_app(root=None, *, warm=True, auth_transport=None):
     def bootstrap(request: Request):
         owner = request.state.owner
         if auth_settings.mode == 'local' and catalog.claim_legacy(owner):
-            from index_runtime import index_is_ready, read_index_manifest
+            from backend.index_runtime import index_is_ready, read_index_manifest
             for path in sorted((root / 'docs').glob('*.pdf')):
                 sha = path.stem
                 if not re.fullmatch(r'[a-f0-9]{64}', sha):
@@ -270,7 +271,7 @@ def create_app(root=None, *, warm=True, auth_transport=None):
                             catalog.put('run', owner, {'manifest': clean(manifest), 'directory': str(manifest_path.parent.relative_to(root))}, doc['id'])
                     except (ValueError, OSError):
                         continue
-        from generation_runtime import DEFAULT_GENERATION_MODEL, model_name_for
+        from backend.generation_runtime import DEFAULT_GENERATION_MODEL, model_name_for
         return {'generation_model': model_name_for(), 'evaluation_model': os.getenv('EVALUATION_MODEL', DEFAULT_GENERATION_MODEL),
                 'independent_reference_verifier': os.getenv('GENERATION_MODEL') != os.getenv('EVALUATION_MODEL'),
                 'max_batch_pdfs': MAX_BATCH_PDFS,
@@ -436,7 +437,7 @@ def create_app(root=None, *, warm=True, auth_transport=None):
         path = root / run['directory'] / 'summary.csv'
         rows, warnings = read_summary(path)
         manifest = {**run['manifest'], 'warnings': list(run['manifest'].get('warnings', [])) + warnings}
-        from evaluation_diagnostics import report_diagnostics
+        from backend.evaluation_diagnostics import report_diagnostics
         manifest, rows, failures = report_diagnostics(root / run['directory'], manifest, rows)
         return {k: v for k, v in run.items() if k != 'directory'} | {'manifest': manifest, 'summary': rows, 'metric_failures': failures}
 

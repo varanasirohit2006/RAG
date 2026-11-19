@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from evaluation_judge import JudgeSettings, RagasJudge, create_openrouter_json_llm
+from backend.evaluation_judge import JudgeSettings, RagasJudge, create_openrouter_json_llm
 
 FREE_MODEL = "inclusionai/ling-3.2-flash:free"
 
@@ -122,8 +122,8 @@ def test_real_verifier_and_scoring_clients_remain_isolated_across_runs(monkeypat
 
 
 def test_openrouter_secret_is_redacted_from_both_evaluation_errors(monkeypatch):
-    import advanced_evaluation
-    import evaluation_generation
+    from backend import advanced_evaluation
+    from backend import evaluation_generation
 
     secret = "private-openrouter-test-key"
     monkeypatch.setenv("OPENROUTER_API_KEY", secret)
@@ -134,7 +134,7 @@ def test_openrouter_secret_is_redacted_from_both_evaluation_errors(monkeypatch):
 
 
 def test_automatic_generation_checks_openrouter_secret_before_drafting(monkeypatch):
-    import evaluation_generation
+    from backend import evaluation_generation
 
     monkeypatch.setenv("GOOGLE_API_KEY", "test-draft-key")
     monkeypatch.setenv("OPENAI_API_KEY", "different-test-key")

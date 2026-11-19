@@ -15,18 +15,17 @@ import math
 import statistics
 import threading
 import time
-import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from evaluation_data import (
-    EvaluationDataError, dataset_template, document_id, document_pages, lexical_reference_metrics,
+from backend.evaluation_data import (
+    EvaluationDataError, document_id, document_pages, lexical_reference_metrics,
     load_evaluation_dataset, resolve_relevance, retrieval_metrics, validate_score,
 )
-from evaluation_judge import JudgeSettings, RagasJudge, JudgeQuotaExceeded, provider_status_code
-from provider_limits import (OpenRouterLimitExceeded, current_openrouter_limit, limit_message,
-                             record_openrouter_limit)
+from backend.evaluation_judge import JudgeSettings, RagasJudge, JudgeQuotaExceeded
+from backend.provider_limits import limit_message, provider_status_code, record_openrouter_limit
+from backend.files import PROJECT_ROOT, read_json, write_json
 
 DEFAULT_STRATEGIES = {
     "preview": ("Production",),
@@ -132,20 +131,6 @@ def _utc():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _write_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
-    temporary.replace(path)
-
-
-def _read_json(path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
 def _error(exc):
     message = str(exc) or type(exc).__name__
     for name in ("GOOGLE_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "COHERE_API_KEY"):
@@ -158,7 +143,7 @@ def _error(exc):
 def _revision():
     root = Path(__file__).resolve().parent
     files = ("advanced_evaluation.py", "evaluation_data.py", "evaluation_judge.py",
-             "rag_pipeline.py", "generation_runtime.py", "retrieval_runtime.py", "index_runtime.py")
+             "rag_pipeline.py", "generation_runtime.py", "retrieval_runtime.py", "index_runtime.py", "files.py")
     return _hash({name: hashlib.sha256((root / name).read_bytes()).hexdigest()
                   for name in files if (root / name).is_file()})
 
@@ -177,7 +162,7 @@ def _reranker_configuration(strategies):
 
 
 def get_db_path():
-    directories = sorted(path for path in Path("db").glob("chroma_*") if path.is_dir())
+    directories = sorted(path for path in (PROJECT_ROOT / "db").glob("chroma_*") if path.is_dir())
     if len(directories) == 1:
         return str(directories[0])
     raise EvaluationDataError("Select an explicit --db index; evaluation must not silently choose another document.")
@@ -203,18 +188,6 @@ def _selection(cases, profile, strategies=None):
         if unanswerable and selected and all(case.answerable for case in selected):
             selected[-1] = unanswerable
     return selected, strategies
-
-
-def evaluation_plan(dataset, *, profile="preview", strategies=None):
-    cases = load_evaluation_dataset(dataset)
-    selected, strategies = _selection(cases, profile, strategies)
-    return {
-        "profile": profile, "total_questions": len(cases), "sampled_questions": len(selected),
-        "strategies": list(strategies), "samples": len(selected) * len(strategies),
-        "judge_metrics": list(PROFILE_METRICS[profile]), "generator_required": profile != "retrieval",
-        "scope": "deterministic preview subset" if profile == "preview" else "all imported cases",
-        "metric_catalog": METRIC_CATALOG,
-    }
 
 
 def _bootstrap_interval(values):
@@ -311,7 +284,7 @@ def _valid_completed_records(records):
 
 async def run_evaluation(
     db_path=None, *, dataset=None, profile="preview", strategies=None,
-    progress_callback=None, cancellation_event=None, output_dir="evaluation_runs",
+    progress_callback=None, cancellation_event=None, output_dir=PROJECT_ROOT / "evaluation_runs",
     force=False, expected_document_hash=None,
 ):
     """Score reviewed cases with bounded concurrency; callbacks are (done,total,message)."""
@@ -338,16 +311,16 @@ async def run_evaluation(
     concurrency = int(os.getenv("EVALUATION_CONCURRENCY", "4"))
     if not 1 <= concurrency <= 8:
         raise ValueError("EVALUATION_CONCURRENCY must be between 1 and 8.")
-    from rag_pipeline import get_embedding_model, load_vector_store, generate_final_answer
-    from retrieval_runtime import get_retrievers, retrieve_documents
-    from generation_runtime import prepare_generation_context, model_name_for
+    from backend.rag_pipeline import get_embedding_model, load_vector_store
+    from backend.retrieval_runtime import get_retrievers, retrieve_documents
+    from backend.generation_runtime import generate_final_answer, prepare_generation_context, model_name_for
 
     emit("Loading the prepared index; no document ingestion is repeated")
     target = Path(db_path or get_db_path()).resolve()
     db = await asyncio.to_thread(load_vector_store, str(target))
     if db is None:
         raise EvaluationDataError("Prepared vector index was not found; prepare this document first.")
-    index_manifest = _read_json(target / "index_manifest.json") or {}
+    index_manifest = read_json(target / "index_manifest.json") or {}
     index_hash = index_manifest.get("document_hash")
     if index_hash and cases[0].document_hash != index_hash:
         raise EvaluationDataError("Dataset document_hash does not match the vector index's source PDF.")
@@ -398,7 +371,7 @@ async def run_evaluation(
     run_key = _hash(config)
     directory = Path(output_dir).resolve() / run_key
     manifest_path = directory / "manifest.json"
-    old_manifest = _read_json(manifest_path)
+    old_manifest = read_json(manifest_path)
     if old_manifest and old_manifest.get("status") == "completed" and not force:
         try:
             records = [json.loads(line) for line in (directory / "samples.jsonl").read_text(encoding="utf-8").splitlines() if line]
@@ -459,7 +432,7 @@ async def run_evaluation(
         }
         answer_key = _hash(identity)
         path = cache_directory / "answers" / (answer_key + ".json")
-        cached = _read_json(path) if not force else None
+        cached = read_json(path) if not force else None
         if cached and isinstance(cached.get("answer"), str) and cached["answer"].strip():
             cache_hits += 1
             return cached["answer"], True
@@ -478,7 +451,7 @@ async def run_evaluation(
                     )
                 if not isinstance(answer, str) or not answer.strip() or answer == "Error generating answer.":
                     raise RuntimeError("Generator did not return a usable answer; failures cannot be scored as responses.")
-                _write_json(path, {"answer": answer, "created_at": _utc(), "provider": generator_provider, "model": generator_model})
+                write_json(path, {"answer": answer, "created_at": _utc(), "provider": generator_provider, "model": generator_model})
                 return answer
             shared_answers[answer_key] = asyncio.create_task(generate())
             reused = False
@@ -499,7 +472,7 @@ async def run_evaluation(
         }
         key = _hash(identity)
         path = cache_directory / "metrics" / (key + ".json")
-        cached = _read_json(path) if not force else None
+        cached = read_json(path) if not force else None
         if cached:
             try:
                 value = validate_score(name, cached["value"])
@@ -525,7 +498,7 @@ async def run_evaluation(
                         explanation = f'{name} exceeded its {metric_timeout}-second complete-metric deadline' if budget.expired() else f'A provider request timed out during {name} (request limit: {judge_settings.timeout} seconds)'
                         raise TimeoutError(explanation + '; completed judging steps are retained for retry.') from exc
                 value = validate_score(name, result["value"])
-                _write_json(path, {"value": value, "reason": result.get("reason"), "created_at": _utc()})
+                write_json(path, {"value": value, "reason": result.get("reason"), "created_at": _utc()})
                 return {"status": "completed", "value": value, "reason": result.get("reason"), "cache_hit": False}
             shared_metrics[key] = asyncio.create_task(evaluate())
             reused = False
@@ -700,12 +673,12 @@ async def run_evaluation(
                     record["status"] = "failed"
                 records.append(record)
                 case_path = directory / "cases" / (_hash([case.id, strategy]) + ".json")
-                _write_json(case_path, record)
+                write_json(case_path, record)
                 done += 1
                 emit(f"{done}/{total} samples finished; {strategy} / {case.id}: {record['status']}")
 
     try:
-        _write_json(manifest_path, manifest)
+        write_json(manifest_path, manifest)
         if profile != "retrieval":
             emit("Preparing the configured evaluation judge; completed answers and scores will be reused")
             judge = RagasJudge(judge_settings, embedding_model=get_embedding_model())
@@ -736,13 +709,13 @@ async def run_evaluation(
             manifest["warnings"].append(provider_limit['reason'])
         summary = summarize_records(records)
         summary.to_csv(directory / "summary.csv", index=False)
-        _write_json(manifest_path, manifest)
+        write_json(manifest_path, manifest)
         emit(f"Evaluation {status}: {len(records)} samples, {failed} failed/partial, {skipped} cancelled/skipped")
         return _result_attrs(summary, manifest, directory)
     except BaseException as exc:
         manifest.update({"status": "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
                          "finished_at": _utc(), "error": _error(exc), "seconds": round(time.perf_counter() - started, 3)})
-        _write_json(manifest_path, manifest)
+        write_json(manifest_path, manifest)
         raise
     finally:
         shared_tasks = list(shared_answers.values()) + list(shared_metrics.values())
@@ -768,17 +741,17 @@ def main():
     parser.add_argument("--profile", choices=tuple(DEFAULT_STRATEGIES), default=None)
     parser.add_argument("--strategies", nargs="+", choices=("Keyword", "Vector", "Hybrid", "Reranking", "Production"))
     parser.add_argument("--document-hash", help="Source PDF SHA-256, required for an old index without a manifest hash.")
-    parser.add_argument("--output-dir", default="evaluation_runs")
+    parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "evaluation_runs"))
     parser.add_argument("--force", action="store_true", help="Rerun instead of reusing identical completed work.")
     args = parser.parse_args()
     try:
         dataset = args.dataset
         document_hash = args.document_hash
         if args.automatic:
-            from evaluation_generation import generate_evaluation_dataset
+            from backend.evaluation_generation import generate_evaluation_dataset
 
             db_path = Path(args.db or get_db_path()).resolve()
-            document_hash = document_hash or (_read_json(db_path / "index_manifest.json") or {}).get("document_hash")
+            document_hash = document_hash or (read_json(db_path / "index_manifest.json") or {}).get("document_hash")
             if not document_hash:
                 raise EvaluationDataError("Automatic evaluation needs the source PDF SHA-256; supply --document-hash or rebuild the index.")
             dataset = asyncio.run(generate_evaluation_dataset(

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from evaluation_judge import JudgeSettings, RagasJudge, create_gemma_json_llm, create_google_json_llm, create_json_judge_llm, provider_status_code
+from backend.evaluation_judge import JudgeSettings, RagasJudge, create_google_json_llm, create_json_judge_llm, provider_status_code
 
 
 class Verdict(BaseModel):
@@ -49,7 +49,7 @@ def test_gemma_client_honors_configured_timeout_without_hidden_sdk_retries(monke
     calls = []
     monkeypatch.setattr(langchain_google_genai, "ChatGoogleGenerativeAI",
                         lambda **kwargs: calls.append(kwargs) or Model([]))
-    create_gemma_json_llm(JudgeSettings(timeout=120, max_retries=2))
+    create_google_json_llm(JudgeSettings(timeout=120, max_retries=2))
     assert calls[0]["timeout"] == 120
     assert calls[0]["max_retries"] == 1
 
@@ -62,7 +62,7 @@ def test_openai_compatible_client_honors_configured_timeout(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-key")
     monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: calls.append(kwargs) or object())
     # Keep the real metrics construction while replacing network clients only.
-    llm = create_gemma_json_llm(JudgeSettings(), model=Model([]))
+    llm = create_google_json_llm(JudgeSettings(), model=Model([]))
     monkeypatch.setattr(ragas.llms, "llm_factory", lambda *args, **kwargs: llm)
     RagasJudge(JudgeSettings(provider="openai", model="test-judge", timeout=120)).prepare()
     assert calls[0]["timeout"] == 120
@@ -95,7 +95,7 @@ def test_completed_judging_step_survives_a_later_timeout(tmp_path):
 @pytest.mark.parametrize("code", [500, 502, 503, 504])
 def test_transient_provider_error_retries_the_same_verdict(code):
     model = Model([ProviderError(code), '{"supported":true}'])
-    llm = create_gemma_json_llm(JudgeSettings(max_retries=1), model=model)
+    llm = create_google_json_llm(JudgeSettings(max_retries=1), model=model)
     assert asyncio.run(llm.agenerate("Verify source evidence.", Verdict)).supported
     assert model.calls == 2
     assert llm.usage["provider_retries"] == 1
@@ -105,7 +105,7 @@ def test_transient_provider_error_retries_the_same_verdict(code):
 @pytest.mark.parametrize("code", [400, 401, 403, 404, 429])
 def test_nontransient_errors_fail_without_retrying(code):
     model = Model([ProviderError(code), '{"supported":true}'])
-    llm = create_gemma_json_llm(JudgeSettings(max_retries=2), model=model)
+    llm = create_google_json_llm(JudgeSettings(max_retries=2), model=model)
     with pytest.raises(ProviderError) as error:
         asyncio.run(llm.agenerate("Verify source evidence.", Verdict))
     assert error.value.code == code
@@ -119,7 +119,7 @@ def test_nontransient_errors_fail_without_retrying(code):
 ])
 def test_provider_retries_and_json_repairs_share_one_attempt_budget(responses, retries):
     model = Model(responses)
-    llm = create_gemma_json_llm(JudgeSettings(max_retries=retries), model=model)
+    llm = create_google_json_llm(JudgeSettings(max_retries=retries), model=model)
     with pytest.raises((ProviderError, ValueError)):
         asyncio.run(llm.agenerate("Verify source evidence.", Verdict))
     assert model.calls == retries + 1
@@ -141,7 +141,7 @@ def test_total_deadline_cancels_active_requests_and_retry_backoff(phase):
 
     # Scale down the valid production settings for a fast real cancellation test.
     settings = SimpleNamespace(**{**asdict(JudgeSettings()), "timeout": 0.03})
-    llm = create_gemma_json_llm(settings, model=SlowModel())
+    llm = create_google_json_llm(settings, model=SlowModel())
 
     async def check():
         with pytest.raises(TimeoutError):

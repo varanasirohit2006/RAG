@@ -83,7 +83,7 @@ def original_pages(pages, sources):
 
 
 def annotate_chunks(documents, sources):
-    from evaluation_data import document_pages
+    from backend.evaluation_data import document_pages
 
     for document in documents:
         document.metadata['source_pages'] = json.dumps(original_pages(document_pages(document), sources), sort_keys=True)

@@ -1,12 +1,12 @@
 """Remember provider-reported free limits without persisting credentials or prose."""
 import hashlib
-import json
 import os
 import threading
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from backend.files import PROJECT_ROOT, read_json, write_json
 
 _lock = threading.Lock()
 
@@ -25,7 +25,7 @@ def provider_status_code(exc):
 
 
 def cache_root():
-    return Path(os.getenv('RAG_EVALUATION_CACHE_DIR', str(Path(__file__).resolve().parent / 'evaluation_runs' / 'cache')))
+    return Path(os.getenv('RAG_EVALUATION_CACHE_DIR', str(PROJECT_ROOT / 'evaluation_runs' / 'cache')))
 
 
 def _state_path():
@@ -34,24 +34,6 @@ def _state_path():
         return None
     fingerprint = hashlib.sha256(key.encode()).hexdigest()
     return cache_root() / 'provider_limits' / (fingerprint + '.json')
-
-
-def write_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
-    try:
-        temporary.write_text(json.dumps(value, allow_nan=False), encoding='utf-8')
-        temporary.replace(path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
-def read_json(path):
-    try:
-        return json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return None
 
 
 def _number(value):

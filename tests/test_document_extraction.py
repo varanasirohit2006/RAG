@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-import document_extraction as extraction
-import ocr_runtime
-from ocr_evaluation import score_ocr
+from backend import document_extraction as extraction
+from backend import ocr_runtime
+from backend.ocr_evaluation import score_ocr
 
 
 def write_native_pdf(path, contents, *, width=300, height=300):
@@ -104,7 +104,7 @@ def test_native_vector_chart_keeps_visual_evidence(tmp_path):
 
 def test_mixed_pdf_preserves_pages_and_chunk_visuals(tmp_path, monkeypatch):
     import pypdfium2
-    from rag_pipeline import create_chunks_by_title, separate_content_types
+    from backend.rag_pipeline import create_chunks_by_title, separate_content_types
 
     native = write_native_pdf(tmp_path / "native.pdf", [
         "BT /F1 12 Tf 20 260 Td (Native page total 100 USD.) Tj ET",

@@ -13,7 +13,6 @@ import os
 import re
 import threading
 import time
-import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -22,8 +21,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from evaluation_data import EvaluationDataError, document_id, document_pages, load_evaluation_dataset
-from evaluation_judge import JUDGE_API_KEYS, JudgeSettings, provider_status_code
+from backend.files import PROJECT_ROOT, write_json
+from backend.evaluation_data import EvaluationDataError, document_id, document_pages, load_evaluation_dataset
+from backend.evaluation_judge import JUDGE_API_KEYS, JudgeSettings
+from backend.provider_limits import provider_status_code
 
 SCHEMA_VERSION = 1
 CATEGORIES = ("factual", "paraphrase", "comparison", "multi_chunk", "numeric")
@@ -101,13 +102,6 @@ def _safe_error(exc):
     return f"{type(exc).__name__}: {_sanitize_message(str(exc) or type(exc).__name__)}"
 
 
-def _write_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    temporary.replace(path)
-
-
 def generation_plan(question_count=10):
     if isinstance(question_count, bool) or not isinstance(question_count, int) or not 1 <= question_count <= 50:
         raise EvaluationDataError("Automatic evaluation needs 1-50 questions.")
@@ -121,8 +115,8 @@ def generation_plan(question_count=10):
 
 
 async def _load_sources(db_path, expected_hash):
-    from rag_pipeline import load_vector_store
-    from retrieval_runtime import get_retrievers
+    from backend.rag_pipeline import load_vector_store
+    from backend.retrieval_runtime import get_retrievers
 
     target = Path(db_path).resolve()
     try:
@@ -139,15 +133,15 @@ async def _load_sources(db_path, expected_hash):
 
 
 def _build_clients(configuration):
-    from generation_runtime import _build_model, create_openrouter_generation_model
-    from evaluation_judge import RagasJudge
+    from backend.generation_runtime import _build_model, create_openrouter_generation_model
+    from backend.evaluation_judge import RagasJudge
 
     if configuration["draft_provider"] == "google" and not os.getenv("GOOGLE_API_KEY"):
         raise EvaluationDataError("GOOGLE_API_KEY is required for automatic question drafting.")
     if configuration["draft_provider"] == "openrouter" and not os.getenv("OPENROUTER_API_KEY"):
         raise EvaluationDataError("OPENROUTER_API_KEY is required for automatic question drafting.")
     if configuration["draft_provider"] == "openrouter":
-        from provider_limits import ensure_openrouter_available
+        from backend.provider_limits import ensure_openrouter_available
         ensure_openrouter_available()
     verifier_key = JUDGE_API_KEYS.get(configuration["verifier"]["provider"])
     if verifier_key and not os.getenv(verifier_key):
@@ -259,7 +253,7 @@ def _cached_dataset(path, configuration, sources):
 
 async def generate_evaluation_dataset(
     db_path, *, expected_document_hash, question_count=10, progress_callback=None,
-    cancellation_event=None, output_dir="evaluation_datasets", force=False,
+    cancellation_event=None, output_dir=PROJECT_ROOT / "evaluation_datasets", force=False,
 ):
     """Generate verified test cases without requiring users to author questions.
 
@@ -311,7 +305,7 @@ async def generate_evaluation_dataset(
     provider = os.getenv("SYNTHETIC_GENERATION_PROVIDER", os.getenv("GENERATION_PROVIDER", "google")).strip().lower()
     if provider not in {"google", "openrouter", "ollama"}:
         raise EvaluationDataError("Automatic question drafting requires a google, openrouter or ollama generation model.")
-    from generation_runtime import model_name_for, ollama_json_schema
+    from backend.generation_runtime import model_name_for, ollama_json_schema
     model = os.getenv("SYNTHETIC_GENERATION_MODEL", "").strip() or model_name_for(provider)
     verifier_settings = JudgeSettings.from_env()
     same_model = _model_identity(model) == _model_identity(verifier_settings.model)
@@ -393,7 +387,7 @@ async def generate_evaluation_dataset(
 
         async def candidate(index):
             from langchain_core.messages import HumanMessage
-            from evaluation_judge import _parse_structured_text
+            from backend.evaluation_judge import _parse_structured_text
 
             async with semaphore:
                 check_cancelled()
@@ -547,7 +541,7 @@ async def generate_evaluation_dataset(
                            "created_at": datetime.now(timezone.utc).isoformat(),
                            "seconds": round(time.perf_counter() - started, 3)}
                 try:
-                    _write_json(failure_path, failure)
+                    write_json(failure_path, failure)
                     diagnostic = f"Diagnostics saved as {failure_path.name}."
                 except OSError:
                     diagnostic = "The diagnostic artifact could not be saved."
@@ -592,7 +586,7 @@ async def generate_evaluation_dataset(
                 "warnings": warnings,
             }
             load_evaluation_dataset(dataset, expected_document_hash=expected_hash)
-            _write_json(path, dataset)
+            write_json(path, dataset)
             emit(f"Automatic dataset ready: {len(accepted)} verified questions")
             return {**dataset, "cache_reused": False, "dataset_path": str(path)}
         finally:
@@ -609,5 +603,5 @@ async def generate_evaluation_dataset(
                     if aio is not None:
                         await aio.aclose()
                 elif provider == 'ollama':
-                    from generation_runtime import close_ollama_model
+                    from backend.generation_runtime import close_ollama_model
                     await close_ollama_model(draft_model)

@@ -11,8 +11,8 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fastapi.testclient import TestClient
 
-from api.auth import AuthSettings, LOGIN_COOKIE, SESSION_COOKIE, digest
-from api.main import create_app
+from backend.api.auth import AuthSettings, SESSION_COOKIE, digest
+from backend.api.main import create_app
 
 ISSUER = 'https://identity.example'
 BASE = 'https://rag.example'

@@ -7,8 +7,8 @@ import pypdfium2 as pdfium
 import pytest
 from fastapi.testclient import TestClient
 
-import api.main as routes
-from pdf_batches import merge_pdfs, original_pages
+import backend.api.main as routes
+from backend.pdf_batches import merge_pdfs, original_pages
 from test_api import Database, HEADERS, await_job, env
 from test_document_extraction import write_native_pdf
 from test_vector_ingestion import LocalTestEmbeddings
@@ -192,10 +192,10 @@ def test_all_failed_evaluations_produce_errors_instead_of_fake_reports(services,
 
 
 def test_combined_index_has_original_and_combined_citations_without_paid_calls(tmp_path, monkeypatch):
-    import document_extraction
-    import rag_pipeline
-    from api.runtime import source
-    from generation_runtime import prepare_generation_context
+    from backend import document_extraction
+    from backend import rag_pipeline
+    from backend.api.runtime import source
+    from backend.generation_runtime import prepare_generation_context
 
     documents = []
     for index, text in enumerate(['Alpha approves a budget of 7 USD and identifies Cedar as the project owner.',

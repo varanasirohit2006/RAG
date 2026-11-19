@@ -28,6 +28,7 @@ Updated: 20 November 2026. See README for operation and HANDOFF for continuation
 | Recovery | Durable job settings/progress, explicit retry after restart, deduplicated replacement jobs, completed-artifact recovery and valid stage-cache reuse. One process is supported. |
 | Accounts | Configurable OIDC login/logout with PKCE and signature/claim validation, issuer/subject identities, durable expiring/revocable sessions and private API ownership. Browser caches/jobs reset on account changes. |
 | Packaging | React/Python Linux Dockerfile, localhost-bound Compose, persistent volumes, non-root execution, pinned embedding revision and API health check. Linux execution remains unverified. |
+| Code organization | Application Python lives in `backend/`, API code in `backend/api/`, React in `frontend/` and regression tests in `tests/`. Shared JSON persistence and repository paths replace duplicated helpers; unused demos, aliases and ingestion summary code are removed. |
 
 Final regression checks and the production React build are recorded in HANDOFF.
 Earlier checks also covered desktop/mobile browser flows. A live one-question

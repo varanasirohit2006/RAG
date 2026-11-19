@@ -1,6 +1,6 @@
 import json
 
-from evaluation_diagnostics import report_diagnostics
+from backend.evaluation_diagnostics import report_diagnostics
 
 
 def test_legacy_timeouts_and_daily_quota_are_reported_without_changing_scores(tmp_path):

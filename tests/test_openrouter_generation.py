@@ -4,7 +4,7 @@ import httpx
 import pytest
 from langchain_core.documents import Document
 
-import generation_runtime as generation
+from backend import generation_runtime as generation
 
 MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free'
 

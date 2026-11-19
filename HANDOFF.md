@@ -4,8 +4,9 @@ Updated: 20 November 2026.
 
 ## Current state
 
-The user approved finishing the Gemini migration, cleanup, documentation and
-GitHub push. Deployment planning is deferred until after this repository update.
+The Gemini migration is complete. The user then requested removing unused and
+redundant code and organizing all application Python under one backend folder.
+Deployment planning remains deferred; this update is source cleanup and packaging.
 The maintained application is React/TypeScript with FastAPI; Streamlit is retired.
 
 The selected preset is Google `gemini-3.1-flash-lite` for question drafting,
@@ -21,7 +22,7 @@ The same model drafts, verifies and scores; reports label that limitation.
 From this directory:
 
 ```powershell
-.\.venv\Scripts\python.exe -B run_app.py
+.\.venv\Scripts\python.exe -B -m backend
 ```
 
 Open http://127.0.0.1:8501. Startup warms local embeddings and model clients
@@ -33,13 +34,42 @@ cd frontend
 npm run build
 ```
 
-Final backend validation passed **289 tests** in 46.72 seconds with five existing
+Final backend validation passed **292 tests** in 46.66 seconds with five existing
 dependency/deprecation warnings. The production React build passed. The frontend
 build needed sandbox escalation because esbuild could not resolve the existing
 Vite configuration through restricted parent directories. Regression tests are
 offline and isolate provider caches; they do not establish live model quality.
 Earlier desktop/mobile checks covered authentication, ownership, recovery and
 multi-PDF flows. No live OIDC or Linux container validation is claimed.
+
+The refactored app restarted successfully at http://127.0.0.1:8501. Health,
+React serving, both selected Gemini models, all three saved documents, all five
+saved reports and existing index chunks were checked without inference requests.
+The OCR module self-test passed for its synthetic clean English image/PDF scan.
+
+## Backend organization
+
+Application Python lives in `backend/`; HTTP/auth/catalog services are in
+`backend/api/`. Tests remain in `tests/` and React in `frontend/`. The launcher,
+evaluation CLI and OCR CLI use `python -m backend`,
+`python -m backend.advanced_evaluation` and `python -m backend.ocr_doctor`.
+Docker and README use these commands; old root script/import paths are removed.
+
+`backend/files.py` defines the repository root and shared atomic JSON read/write
+helpers. Embedding/provider caches and default evaluation output retain their
+original locations. API ingestion explicitly uses the supplied workspace root
+for indexes and extraction caches, including single-PDF preparation. A regression
+test uploads, prepares and reuses a real native PDF from a different working
+directory with local test embeddings.
+
+Removed unused ingestion demo/wrappers, the uncalled AI-summary ingestion option,
+the Gemma-to-Google alias, unused evaluation-plan code and redundant imports.
+Chunk conversion is now named `chunks_to_documents`; tests exercise actual index
+and generation services directly. Duplicate JSON writers/readers are consolidated
+and failed writes retain completed artifacts. Application Python is 83 lines
+smaller overall. Existing provider, OCR, account, recovery and multi-PDF features
+remain supported. Dependency pins are retained because the apparent unused
+packages are required by Ragas/LangChain or supported provider adapters.
 
 ## Provider behavior
 

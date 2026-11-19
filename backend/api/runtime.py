@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import HTTPException
-from processing_jobs import BackgroundJob
+from backend.processing_jobs import BackgroundJob
 
 TERMINAL = {'succeeded', 'failed', 'cancelled'}
 METRICS = {'faithfulness', 'factual_correctness', 'answer_relevancy', 'context_precision',
@@ -22,7 +22,7 @@ METRICS = {'faithfulness', 'factual_correctness', 'answer_relevancy', 'context_p
 def read_summary(path):
     """Legacy reports receive the same range checks as newly generated scores."""
     import pandas as pd
-    from evaluation_data import validate_score
+    from backend.evaluation_data import validate_score
     warnings = []
     try:
         rows = pd.read_csv(path).to_dict(orient='records') if path.is_file() else []
@@ -59,8 +59,8 @@ def clean(value):
 
 
 def source(document, document_id):
-    from evaluation_data import document_id as chunk_id, document_pages
-    from generation_runtime import document_payload
+    from backend.evaluation_data import document_id as chunk_id, document_pages
+    from backend.generation_runtime import document_payload
     payload = document_payload(document)
     assets = [Path(path).name for path in payload['image_paths']]
     return {'id': chunk_id(document), 'text': payload['raw_text'] or document.page_content,
@@ -193,8 +193,8 @@ class Jobs:
 
 
 def retrieval_experiment(database, request, job, document_id):
-    from generation_runtime import generate_final_answer, get_generation_model, content_text
-    from retrieval_runtime import get_retrievers, get_reranker
+    from backend.generation_runtime import generate_final_answer, get_generation_model, content_text
+    from backend.retrieval_runtime import get_retrievers, get_reranker
     started = time.perf_counter()
     query = request.question.strip()
     variations = [q.strip() for q in request.variations if q.strip()]

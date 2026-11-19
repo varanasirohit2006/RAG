@@ -4,7 +4,7 @@ import pytest
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage
 
-import generation_runtime as generation
+from backend import generation_runtime as generation
 
 
 class ProviderError(Exception):

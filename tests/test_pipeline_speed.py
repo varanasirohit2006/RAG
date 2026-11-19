@@ -11,10 +11,10 @@ from langchain_core.messages import AIMessage
 from PIL import Image
 from unstructured.documents.elements import ElementMetadata, NarrativeText, Table
 
-import generation_runtime
-import index_runtime
-import rag_pipeline
-import retrieval_runtime
+from backend import generation_runtime
+from backend import index_runtime
+from backend import rag_pipeline
+from backend import retrieval_runtime
 
 
 class CountingEmbeddings(Embeddings):
@@ -39,10 +39,10 @@ def sample_documents():
 def test_reingestion_skips_completed_embedding_batches(tmp_path, monkeypatch):
     embedding = CountingEmbeddings()
     monkeypatch.setattr(rag_pipeline, "get_embedding_model", lambda: embedding)
-    db = rag_pipeline.create_vector_store(sample_documents(), str(tmp_path / "db"))
+    db = index_runtime.build_vector_store(sample_documents(), str(tmp_path / 'db'), embedding=rag_pipeline.get_embedding_model())
     assert len(db.get()["ids"]) == 2
     assert embedding.document_calls == 1
-    reopened = rag_pipeline.create_vector_store(sample_documents(), str(tmp_path / "db"))
+    reopened = index_runtime.build_vector_store(sample_documents(), str(tmp_path / 'db'), embedding=rag_pipeline.get_embedding_model())
     assert len(reopened.get()["ids"]) == 2
     assert embedding.document_calls == 1
 
@@ -59,7 +59,7 @@ def test_verified_saved_index_reopens_without_rechunking(tmp_path, monkeypatch):
     manifest = index_runtime.read_index_manifest(directory)
     assert manifest["document_hash"] == "source-pdf-sha"
     assert manifest["count"] == 1
-    assert manifest["pipeline_version"] == rag_pipeline.PIPELINE_VERSION
+    assert manifest["pipeline_version"] == index_runtime.PIPELINE_VERSION
     def rechunking_is_a_bug(*args, **kwargs):
         pytest.fail("Saved index must be reused")
     monkeypatch.setattr(rag_pipeline, "create_chunks_by_title", rechunking_is_a_bug)
@@ -71,12 +71,12 @@ def test_verified_saved_index_reopens_without_rechunking(tmp_path, monkeypatch):
 def test_raw_table_ingestion_preserves_evidence_without_model_calls(monkeypatch):
     def expensive_model(*args, **kwargs):
         pytest.fail("Default ingestion must not summarize with an LLM")
-    monkeypatch.setattr(rag_pipeline, "create_ai_enhanced_summary", expensive_model)
+    monkeypatch.setattr(generation_runtime, "generate_final_answer", expensive_model)
     table = Table("Invoice total\t123.45 USD", metadata=ElementMetadata(
         filename="invoice.pdf", page_number=3,
         text_as_html="<table><tr><td>Total</td><td>123.45 USD</td></tr></table>",
     ))
-    documents = rag_pipeline.summarise_chunks([table])
+    documents = rag_pipeline.chunks_to_documents([table])
     payload = json.loads(documents[0].metadata["original_content"])
     assert "123.45 USD" in documents[0].page_content
     assert "123.45 USD" in payload["raw_text"]
@@ -99,7 +99,7 @@ def test_images_move_to_assets_and_remain_in_generation_context(tmp_path, monkey
             "images_base64": [image_base64],
         }),
     })
-    db = rag_pipeline.create_vector_store([document], str(tmp_path / "db"))
+    db = index_runtime.build_vector_store([document], str(tmp_path / 'db'), embedding=rag_pipeline.get_embedding_model())
     metadata = db.get()["metadatas"][0]
     payload = json.loads(metadata["original_content"])
     assert "images_base64" not in payload
@@ -115,7 +115,7 @@ def test_images_move_to_assets_and_remain_in_generation_context(tmp_path, monkey
 
 def test_retriever_cache_reuses_keyword_index(tmp_path, monkeypatch):
     monkeypatch.setattr(rag_pipeline, "get_embedding_model", lambda: CountingEmbeddings())
-    db = rag_pipeline.create_vector_store(sample_documents(), str(tmp_path / "db"))
+    db = index_runtime.build_vector_store(sample_documents(), str(tmp_path / 'db'), embedding=rag_pipeline.get_embedding_model())
     first = retrieval_runtime.get_retrievers(db, k=2)
     second = retrieval_runtime.get_retrievers(db, k=2)
     assert first[1] is second[1]
@@ -232,7 +232,7 @@ def test_retrieval_merges_duplicate_evidence_and_keeps_all_source_ids(tmp_path, 
         Document(page_content="The invoice total is 123.45 USD.", metadata={"page": 2}),
         Document(page_content="The account balance is 200 USD.", metadata={"page": 3}),
     ]
-    db = rag_pipeline.create_vector_store(documents, str(tmp_path / "db"))
+    db = index_runtime.build_vector_store(documents, str(tmp_path / 'db'), embedding=rag_pipeline.get_embedding_model())
     _, keyword, _, _ = retrieval_runtime.get_retrievers(db, k=3)
     results = keyword.invoke("invoice total")
     matches = [document for document in results if "invoice total" in document.page_content]
@@ -255,7 +255,7 @@ def test_same_caption_with_different_images_retains_distinct_visual_evidence(tmp
                 "raw_text": "Revenue chart.", "tables_html": [], "images_base64": [image_base64],
             }),
         }))
-    db = rag_pipeline.create_vector_store(documents, str(tmp_path / "db"))
+    db = index_runtime.build_vector_store(documents, str(tmp_path / 'db'), embedding=rag_pipeline.get_embedding_model())
     _, keyword, _, canonical = retrieval_runtime.get_retrievers(db, k=2)
     assert len(canonical) == 2
     assert len(keyword.invoke("revenue chart")) == 2
@@ -265,9 +265,9 @@ def test_changed_embedding_revision_reembeds_without_duplicating_records(tmp_pat
     embedding = CountingEmbeddings()
     monkeypatch.setattr(rag_pipeline, "get_embedding_model", lambda: embedding)
     monkeypatch.setenv("EMBEDDING_REVISION", "first-revision")
-    rag_pipeline.create_vector_store(sample_documents(), str(tmp_path / "db"))
+    index_runtime.build_vector_store(sample_documents(), str(tmp_path / 'db'), embedding=rag_pipeline.get_embedding_model())
     monkeypatch.setenv("EMBEDDING_REVISION", "second-revision")
-    db = rag_pipeline.create_vector_store(sample_documents(), str(tmp_path / "db"))
+    db = index_runtime.build_vector_store(sample_documents(), str(tmp_path / 'db'), embedding=rag_pipeline.get_embedding_model())
     assert embedding.document_calls == 2
     assert len(db.get()["ids"]) == 2
     assert index_runtime.read_index_manifest(tmp_path / "db")["embedding_revision"] == "second-revision"
@@ -297,7 +297,7 @@ def test_long_native_element_keeps_distinct_chunk_slices_and_complete_coverage()
     element = NarrativeText(original, metadata=ElementMetadata(filename="long.pdf", page_number=12))
     chunks = rag_pipeline.create_chunks_by_title([element])
     assert len(chunks) == 2
-    documents = rag_pipeline.summarise_chunks(chunks)
+    documents = rag_pipeline.chunks_to_documents(chunks)
     contents = [document.page_content for document in documents]
     assert contents == [chunk.text for chunk in chunks]
     assert len(set(contents)) == 2
@@ -323,7 +323,7 @@ def test_invalid_context_size_fails_before_search():
 
 def test_failed_reranking_does_not_cache_failure_response(tmp_path, monkeypatch):
     monkeypatch.setattr(rag_pipeline, "get_embedding_model", lambda: CountingEmbeddings())
-    db = rag_pipeline.create_vector_store(sample_documents(), str(tmp_path / "db"))
+    db = index_runtime.build_vector_store(sample_documents(), str(tmp_path / 'db'), embedding=rag_pipeline.get_embedding_model())
     calls = []
     class RecoveringReranker:
         def compress_documents(self, documents, query):
@@ -346,7 +346,7 @@ def test_reembedding_same_corpus_rebuilds_retrievers_with_current_embedding_clie
     first_embedding = CountingEmbeddings()
     monkeypatch.setattr(rag_pipeline, "get_embedding_model", lambda: first_embedding)
     monkeypatch.setenv("EMBEDDING_REVISION", "first-revision")
-    first_db = rag_pipeline.create_vector_store(sample_documents(), directory)
+    first_db = index_runtime.build_vector_store(sample_documents(), directory, embedding=rag_pipeline.get_embedding_model())
     first_manifest = index_runtime.read_index_manifest(directory)
     first_retrievers = retrieval_runtime.get_retrievers(first_db, k=2)
     assert first_retrievers[0].base.vectorstore.embeddings is first_embedding
@@ -354,7 +354,7 @@ def test_reembedding_same_corpus_rebuilds_retrievers_with_current_embedding_clie
     second_embedding = CountingEmbeddings()
     monkeypatch.setattr(rag_pipeline, "get_embedding_model", lambda: second_embedding)
     monkeypatch.setenv("EMBEDDING_REVISION", "second-revision")
-    second_db = rag_pipeline.create_vector_store(sample_documents(), directory)
+    second_db = index_runtime.build_vector_store(sample_documents(), directory, embedding=rag_pipeline.get_embedding_model())
     second_manifest = index_runtime.read_index_manifest(directory)
     second_retrievers = retrieval_runtime.get_retrievers(second_db, k=2)
 

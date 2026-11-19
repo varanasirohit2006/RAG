@@ -2,14 +2,13 @@
 
 import asyncio
 import json
-import math
 from pathlib import Path
 
 import pytest
 from langchain_core.documents import Document
 
-import advanced_evaluation as evaluation
-from evaluation_data import EvaluationDataError, validate_score
+from backend import advanced_evaluation as evaluation, generation_runtime
+from backend.evaluation_data import load_evaluation_dataset, validate_score
 from test_evaluation import runtime, row
 
 
@@ -99,9 +98,7 @@ def test_latency_denominators_exclude_missing_values_and_report_failures():
 
 
 def test_citations_cannot_reference_passages_omitted_by_context_limits(runtime, monkeypatch):
-    import generation_runtime
-    import rag_pipeline
-    import retrieval_runtime
+    from backend import retrieval_runtime
 
     db_dir, output, _ = runtime
     documents = [
@@ -119,7 +116,7 @@ def test_citations_cannot_reference_passages_omitted_by_context_limits(runtime, 
         "prompt": question + documents[0].page_content, "text_contexts": [documents[0].page_content],
         "chunk_ids": ["c1"], "image_paths": [], "images_base64": [],
     })
-    monkeypatch.setattr(rag_pipeline, "generate_final_answer", lambda *args, **kwargs: "123.45 USD [Source 2; page 99]")
+    monkeypatch.setattr(generation_runtime, "generate_final_answer", lambda *args, **kwargs: "123.45 USD [Source 2; page 99]")
     report = asyncio.run(evaluation.run_evaluation(
         str(db_dir), dataset=[row()], profile="full", strategies=["Vector"], output_dir=output,
     ))
@@ -162,9 +159,9 @@ def test_reranking_alias_reports_actual_hybrid_fallback_and_dataset_provenance(r
 
 def test_reranking_alias_cannot_duplicate_production_or_run_local_profile():
     with pytest.raises(ValueError, match="duplicate"):
-        evaluation.evaluation_plan([row()], strategies=["Production", "Reranking"])
+        evaluation._selection(load_evaluation_dataset([row()]), "preview", strategies=["Production", "Reranking"])
     with pytest.raises(ValueError, match="external reranker"):
-        evaluation.evaluation_plan([row()], profile="retrieval", strategies=["Reranking"])
+        evaluation._selection(load_evaluation_dataset([row()]), "retrieval", strategies=["Reranking"])
 
 
 def test_false_answer_rate_is_derived_only_for_unanswerable_cases(runtime):
@@ -181,7 +178,7 @@ def test_false_answer_rate_is_derived_only_for_unanswerable_cases(runtime):
 def test_judge_token_usage_is_measured_when_provider_supplies_it():
     from pydantic import BaseModel
     from types import SimpleNamespace
-    from evaluation_judge import JudgeSettings, create_gemma_json_llm
+    from backend.evaluation_judge import JudgeSettings, create_google_json_llm
 
     class Verdict(BaseModel):
         faithful: bool
@@ -191,7 +188,7 @@ def test_judge_token_usage_is_measured_when_provider_supplies_it():
             return SimpleNamespace(content='{"faithful":true}', response_metadata={"finish_reason": "STOP"},
                                    usage_metadata={"input_tokens": 12, "output_tokens": 6, "total_tokens": 18})
 
-    judge = create_gemma_json_llm(JudgeSettings(), model=Model())
+    judge = create_google_json_llm(JudgeSettings(), model=Model())
     asyncio.run(judge.agenerate("Check evidence", Verdict))
     assert judge.usage["token_usage_requests"] == 1
     assert judge.usage["total_tokens"] == 18

@@ -9,8 +9,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from document_extraction import ExtractionSettings, extract_document, recognize_image
-from ocr_evaluation import score_ocr
+from backend.document_extraction import ExtractionSettings, extract_document, recognize_image
+from backend.ocr_evaluation import score_ocr
 
 REFERENCE = "Reliable OCR reads English scans.\nInvoice total is 12345.67 USD."
 

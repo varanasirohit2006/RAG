@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.documents import Document
 
-import evaluation_generation as generation
-from evaluation_data import EvaluationDataError, load_evaluation_dataset
+from backend import evaluation_generation as generation
+from backend.evaluation_data import EvaluationDataError, load_evaluation_dataset
 
 HASH = "a" * 64
 
@@ -259,7 +259,7 @@ def test_whitespace_cannot_satisfy_exact_supporting_evidence(quote):
 
 
 def test_source_index_mismatch_is_rejected_before_loading_or_model_requests(tmp_path, monkeypatch):
-    import rag_pipeline
+    from backend import rag_pipeline
 
     manifest = tmp_path / "index_manifest.json"
     manifest.write_text(json.dumps({"document_hash": "b" * 64}), encoding="utf-8")

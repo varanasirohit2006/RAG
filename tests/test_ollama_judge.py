@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from evaluation_judge import JudgeSettings, RagasJudge, create_ollama_json_llm
-from generation_runtime import ollama_json_schema
+from backend.evaluation_judge import JudgeSettings, RagasJudge, create_ollama_json_llm
+from backend.generation_runtime import ollama_json_schema
 
 
 class Verdict(BaseModel):
@@ -119,7 +119,7 @@ def test_automatic_drafting_and_source_verification_work_without_remote_clients(
     import dotenv
     import langchain_ollama
     from langchain_core.documents import Document
-    import evaluation_generation as generation
+    from backend import evaluation_generation as generation
 
     disable_remote_clients(monkeypatch)
     monkeypatch.setattr(dotenv, "load_dotenv", lambda: False)
@@ -162,7 +162,7 @@ def test_automatic_drafting_and_source_verification_work_without_remote_clients(
 @pytest.mark.parametrize("model", ["gemma3:270m", "gemma3:1b", "gemma3:270m-it-q4_K_M"])
 def test_text_only_gemma_models_omit_images_and_preserve_extracted_text(model):
     from langchain_core.documents import Document
-    from generation_runtime import prepare_generation_context
+    from backend.generation_runtime import prepare_generation_context
 
     document = Document(page_content="Invoice total: 123.45 USD.",
                         metadata={"chunk_id": "invoice", "original_content": '{"raw_text":"Invoice total: 123.45 USD.","images_base64":["unused-image"]}'})
@@ -174,13 +174,13 @@ def test_text_only_gemma_models_omit_images_and_preserve_extracted_text(model):
 
 
 def test_local_generation_detects_ollama_output_limit():
-    from generation_runtime import _finish_reason
+    from backend.generation_runtime import _finish_reason
 
     assert _finish_reason(SimpleNamespace(response_metadata={"done_reason": "length"})) == "LENGTH"
 
 
 def test_local_decoding_schema_preserves_structure_without_large_string_repetitions():
-    from evaluation_generation import DraftQuestion
+    from backend.evaluation_generation import DraftQuestion
 
     original = DraftQuestion.model_json_schema()
     grammar = ollama_json_schema(DraftQuestion)
@@ -199,7 +199,7 @@ def test_local_decoding_schema_preserves_structure_without_large_string_repetiti
 @pytest.mark.parametrize("reason", ["", "x" * 1201])
 def test_local_verdict_still_enforces_string_bounds_after_decoding(reason):
     import json
-    from evaluation_generation import SourceVerdict
+    from backend.evaluation_generation import SourceVerdict
 
     content = json.dumps({"supported": True, "unambiguous": True, "all_evidence_relevant": True,
                           "category_valid": True, "reason": reason})

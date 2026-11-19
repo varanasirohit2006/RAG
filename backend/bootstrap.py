@@ -7,13 +7,13 @@ def warm_runtime():
     started = time.perf_counter()
     print('Loading local search dependencies...', flush=True)
     import pandas
-    from rag_pipeline import get_embedding_model
+    from backend.rag_pipeline import get_embedding_model
     model = get_embedding_model()
     import langchain_chroma
     model.embed_query('Local search initialization')
     print(f'Local search ready in {time.perf_counter()-started:.2f}s.', flush=True)
-    from generation_runtime import get_generation_model, resolve_provider
-    from retrieval_runtime import get_reranker
+    from backend.generation_runtime import get_generation_model, resolve_provider
+    from backend.retrieval_runtime import get_reranker
     provider = resolve_provider()
     if provider == 'ollama' or (provider == 'google' and os.getenv('GOOGLE_API_KEY')) or (provider == 'openrouter' and os.getenv('OPENROUTER_API_KEY')):
         get_generation_model()

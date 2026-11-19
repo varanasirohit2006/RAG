@@ -9,8 +9,8 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 
-import api.main as routes
-from api.runtime import Jobs, clean, read_summary
+import backend.api.main as routes
+from backend.api.runtime import Jobs, clean, read_summary
 
 HEADERS = {'X-RAG-Client': '1'}
 SHA = 'a' * 64
@@ -31,8 +31,8 @@ class Database:
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    import index_runtime
-    import rag_pipeline
+    from backend import index_runtime
+    from backend import rag_pipeline
     monkeypatch.setattr(index_runtime, 'index_is_ready', lambda *args, **kwargs: True)
     monkeypatch.setattr(rag_pipeline, 'load_vector_store', lambda path: Database())
     app = routes.create_app(tmp_path, warm=False)
@@ -77,7 +77,7 @@ def test_csrf_and_upload_validation(env):
 
 def test_upload_reuses_pdf_and_serializes_preparation(env, monkeypatch):
     _, client, _, root = env
-    monkeypatch.setattr(routes, 'prepare_document', lambda *args: {'database': Database(), 'index_path': 'db/chroma_new', 'stats': {'NarrativeText':2}, 'timings': {'index_seconds':.2}, 'extraction_cache_hit': True})
+    monkeypatch.setattr(routes, 'prepare_document', lambda *args, **kwargs: {'database': Database(), 'index_path': 'db/chroma_new', 'stats': {'NarrativeText':2}, 'timings': {'index_seconds':.2}, 'extraction_cache_hit': True})
     response = client.post('/api/documents', headers=HEADERS, files={'file': ('../new.pdf',b'%PDF-1.4 new')})
     assert response.status_code == 202
     payload = response.json()
@@ -351,7 +351,8 @@ def test_restart_restores_owned_jobs_and_explicit_retry_settings(env, monkeypatc
         entered.set()
         assert release.wait(3)
 
-    def prepare(*args):
+    def prepare(*args, **kwargs):
+        assert kwargs['storage_root'] == root
         hold('prepare')
         return {'database': Database(), 'index_path': 'db/chroma_test', 'stats': {},
                 'timings': {}, 'extraction_cache_hit': True}
@@ -465,7 +466,7 @@ def test_committed_result_is_recovered_without_repeating_work(env, monkeypatch, 
 
 
 def test_graceful_shutdown_retains_interruption_and_late_worker_updates_do_not_overwrite_it(tmp_path):
-    from api.storage import Catalog
+    from backend.api.storage import Catalog
     catalog = Catalog(tmp_path / 'catalog.sqlite3')
     jobs, entered = Jobs(catalog), threading.Event()
     def waiting(job):
@@ -490,7 +491,7 @@ def test_graceful_shutdown_retains_interruption_and_late_worker_updates_do_not_o
 
 def test_legacy_job_schema_is_migrated_and_old_jobs_remain_readable(tmp_path):
     import sqlite3
-    from api.storage import Catalog
+    from backend.api.storage import Catalog
     path = tmp_path / 'legacy.sqlite3'
     with sqlite3.connect(path) as db:
         db.execute('CREATE TABLE jobs (id TEXT PRIMARY KEY, owner TEXT, document_id TEXT, kind TEXT, snapshot TEXT)')

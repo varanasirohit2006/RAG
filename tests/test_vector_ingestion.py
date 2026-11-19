@@ -1,7 +1,7 @@
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-import rag_pipeline
+from backend import rag_pipeline, index_runtime
 
 
 class LocalTestEmbeddings(Embeddings):
@@ -21,9 +21,9 @@ def test_reingestion_upserts_existing_chunks_instead_of_duplicating(tmp_path, mo
         Document(page_content="Second page balance 200 USD", metadata={"page": 2}),
     ]
     directory = str(tmp_path / "vectors")
-    first = rag_pipeline.create_vector_store(documents, persist_directory=directory)
+    first = index_runtime.build_vector_store(documents, directory=directory, embedding=rag_pipeline.get_embedding_model())
     first_ids = set(first.get()["ids"])
     assert len(first_ids) == 2
-    reopened = rag_pipeline.create_vector_store(documents, persist_directory=directory)
+    reopened = index_runtime.build_vector_store(documents, directory=directory, embedding=rag_pipeline.get_embedding_model())
     assert set(reopened.get()["ids"]) == first_ids
     assert len(reopened.similarity_search("invoice", k=5)) == 2

@@ -8,7 +8,7 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
-from document_extraction import ExtractionError
+from backend.document_extraction import ExtractionError
 
 _engine_lock = threading.Lock()
 

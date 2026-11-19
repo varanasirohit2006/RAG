@@ -1,4 +1,4 @@
-"""Reusable document ingestion, grounded generation, and retrieval services."""
+"""Local embeddings and source-preserving document chunking/index preparation."""
 
 from __future__ import annotations
 
@@ -11,15 +11,8 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from unstructured.chunking.title import chunk_by_title
 
-from document_extraction import ExtractionSettings, extract_document
-from generation_runtime import (
-    GenerationError,
-    generate_final_answer,
-    get_generation_model,
-    prepare_generation_context,
-)
-from index_runtime import (
-    PIPELINE_VERSION,
+from backend.files import PROJECT_ROOT
+from backend.index_runtime import (
     build_vector_store,
     elements_fingerprint,
     embedding_name,
@@ -29,7 +22,6 @@ from index_runtime import (
     open_vector_store,
     read_index_manifest,
 )
-from retrieval_runtime import get_retrievers, get_reranker, retrieve_documents
 
 load_dotenv()
 
@@ -60,7 +52,7 @@ def _embedding_cache_directory():
         return Path(os.getenv("HF_HUB_CACHE"))
     if os.getenv("HF_HOME"):
         return Path(os.getenv("HF_HOME")) / "hub"
-    return Path(__file__).resolve().parent / ".cache" / "huggingface" / "hub"
+    return PROJECT_ROOT / ".cache" / "huggingface" / "hub"
 
 
 def _local_embedding_snapshot():
@@ -94,13 +86,6 @@ def _local_embedding_snapshot():
     return None
 
 
-def partition_document(file_path: str, *, extraction_mode=None, ocr_backend=None):
-    return extract_document(
-        file_path,
-        settings=ExtractionSettings.from_env(mode=extraction_mode, ocr_backend=ocr_backend),
-    )
-
-
 def create_chunks_by_title(elements):
     return chunk_by_title(
         elements=elements, combine_text_under_n_chars=200,
@@ -131,21 +116,8 @@ def separate_content_types(chunk):
     return {"text": text, "tables": tables, "images": images, "types": types}
 
 
-def create_ai_enhanced_summary(text: str, tables: list, images: list, *, provider=None):
-    """Optional expensive enhancement; ordinary ingestion does not call this."""
-    document = Document(page_content=text, metadata={
-        "original_content": json.dumps({
-            "raw_text": text, "tables_html": tables, "images_base64": images,
-        }),
-    })
-    return generate_final_answer(
-        [document], "Describe this document section for retrieval. Preserve its key facts, numbers, table labels, and image content.",
-        provider=provider,
-    )
-
-
-def summarise_chunks(chunks, *, use_ai_summaries=False, provider=None, progress_callback=None):
-    """Prepare searchable raw evidence with no model calls unless explicitly requested."""
+def chunks_to_documents(chunks, *, progress_callback=None):
+    """Prepare searchable raw evidence without model calls."""
     documents = []
     total = len(chunks)
     for index, chunk in enumerate(chunks):
@@ -159,9 +131,6 @@ def summarise_chunks(chunks, *, use_ai_summaries=False, provider=None, progress_
             if metadata and metadata.filename and metadata.filename not in sources:
                 sources.append(metadata.filename)
         text = data["text"]
-        if use_ai_summaries and (data["tables"] or data["images"]):
-            # Raw evidence remains available for the answer even when summaries are enabled.
-            text = create_ai_enhanced_summary(text, data["tables"], data["images"], provider=provider)
         if not text.strip():
             if data["tables"]:
                 text = "\n".join(data["tables"])
@@ -180,13 +149,6 @@ def summarise_chunks(chunks, *, use_ai_summaries=False, provider=None, progress_
         if progress_callback:
             progress_callback(index + 1, total, "Preparing searchable text and source evidence...")
     return documents
-
-
-def create_vector_store(documents, persist_directory="db/chroma_db", *, progress_callback=None):
-    """Batch upserts and reuse existing record IDs instead of embedding them again."""
-    return build_vector_store(
-        documents, persist_directory, get_embedding_model(), progress_callback=progress_callback,
-    )
 
 
 def load_vector_store(db_path):
@@ -222,33 +184,16 @@ def get_or_create_vector_store(elements, persist_directory, *, progress_callback
                 raise ValueError('Combined PDF evidence has missing page provenance; its original files cannot be mapped safely.')
         else:
             chunks = create_chunks_by_title(elements)
-        documents = summarise_chunks(chunks, progress_callback=progress_callback)
+        documents = chunks_to_documents(chunks, progress_callback=progress_callback)
         if source_documents:
-            from pdf_batches import annotate_chunks
+            from backend.pdf_batches import annotate_chunks
             annotate_chunks(documents, source_documents)
         database = build_vector_store(
             documents, persist_directory, get_embedding_model(), progress_callback=progress_callback,
             replace=True, source_fingerprint=fingerprint, document_hash=document_hash,
         )
         if source_documents:
-            from index_runtime import write_index_manifest
+            from backend.index_runtime import write_index_manifest
             manifest = read_index_manifest(persist_directory)
             write_index_manifest(Path(persist_directory), {**manifest, 'source_documents': source_documents, 'corpus_type': 'combined_pdfs'})
         return database
-
-
-def run_complete_ingestion_pipeline(pdf_path: str, *, persist_directory="db/chroma_db",
-                                    progress_callback=None, document_hash=None):
-    elements = partition_document(pdf_path)
-    return get_or_create_vector_store(
-        elements, persist_directory, progress_callback=progress_callback, document_hash=document_hash,
-    )
-
-
-if __name__ == "__main__":
-    file_path = "./docs/sample.pdf"
-    if os.path.exists(file_path):
-        db = run_complete_ingestion_pipeline(file_path)
-        query = "What is the main topic?"
-        documents, _ = retrieve_documents(db, query)
-        print(generate_final_answer(documents, query))

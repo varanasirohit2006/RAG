@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
-from provider_limits import provider_status_code
+from backend.provider_limits import provider_status_code
 
 DEFAULT_GENERATION_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_OPENROUTER_GENERATION_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
@@ -373,7 +373,7 @@ def generate_final_answer(chunks, query, *, provider=None, model_name=None,
             finish_reason = ""
             try:
                 if provider == 'openrouter':
-                    from provider_limits import ensure_openrouter_available
+                    from backend.provider_limits import ensure_openrouter_available
                     ensure_openrouter_available()
                 if token_callback:
                     stream = model.stream(prepared["messages"])
@@ -412,7 +412,7 @@ def generate_final_answer(chunks, query, *, provider=None, model_name=None,
     except Exception as exc:
         code = provider_status_code(exc)
         if provider == 'openrouter' and code == 429:
-            from provider_limits import limit_message, record_openrouter_limit
+            from backend.provider_limits import limit_message, record_openrouter_limit
             raise GenerationError('openrouter generation blocked (HTTP 429): ' + limit_message(record_openrouter_limit(exc))) from exc
         label = f"{type(exc).__name__}" + (f", code {code}" if code else "")
         raise GenerationError(

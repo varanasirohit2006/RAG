@@ -6,8 +6,8 @@ import threading
 import pytest
 from unstructured.documents.elements import ElementMetadata, NarrativeText
 
-import processing_jobs as jobs
-from document_extraction import ExtractionSettings
+from backend import processing_jobs as jobs
+from backend.document_extraction import ExtractionSettings
 
 
 def test_running_job_exposes_progress_and_tokens_without_blocking():

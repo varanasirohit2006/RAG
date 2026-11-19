@@ -100,7 +100,7 @@ def recognize_image(image, settings: ExtractionSettings) -> tuple[str, float | N
         except Exception as exc:
             raise ExtractionError("Tesseract OCR failed for this page.") from exc
 
-    from ocr_runtime import recognize
+    from backend.ocr_runtime import recognize
 
     return recognize(image, min_confidence=settings.min_confidence)
 

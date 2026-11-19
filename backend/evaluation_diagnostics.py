@@ -3,7 +3,7 @@ import ast
 import json
 from pathlib import Path
 
-from provider_limits import limit_from_body, limit_message
+from backend.provider_limits import limit_from_body, limit_message
 
 QUALITY_METRICS = ('faithfulness', 'factual_correctness', 'answer_relevancy', 'context_precision', 'context_recall')
 
@@ -48,7 +48,7 @@ def report_diagnostics(directory, manifest, rows):
                     reason = f'The judge timed out under the configured {configured}-second metric budget.' if configured else 'The judge timed out while evaluating this metric.'
                 category = 'timeout'
             else:
-                from api.runtime import Jobs
+                from backend.api.runtime import Jobs
                 reason = Jobs.safe_snapshot({'error': error or metric.get('reason') or 'Evaluation failed.'})['error']
                 category = 'evaluation_error'
             failures.append({'strategy': record.get('strategy'), 'question_id': record.get('question_id'),

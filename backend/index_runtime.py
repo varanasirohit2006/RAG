@@ -12,7 +12,8 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 
-from generation_runtime import document_payload
+from backend.generation_runtime import document_payload
+from backend.files import read_json, write_json
 
 PIPELINE_VERSION = "fast-v3"
 MANIFEST_NAME = "index_manifest.json"
@@ -40,18 +41,12 @@ def index_lock(directory):
 
 
 def read_index_manifest(directory):
-    try:
-        value = json.loads((Path(directory) / MANIFEST_NAME).read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else None
-    except (OSError, json.JSONDecodeError):
-        return None
+    value = read_json(Path(directory) / MANIFEST_NAME)
+    return value if isinstance(value, dict) else None
 
 
 def write_index_manifest(directory, manifest):
-    path = Path(directory) / MANIFEST_NAME
-    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    write_json(Path(directory) / MANIFEST_NAME, manifest)
 
 
 def elements_fingerprint(elements):
