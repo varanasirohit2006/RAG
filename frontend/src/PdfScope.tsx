@@ -13,9 +13,12 @@ export default function PdfScope({ mode, setMode, documents, selected, setSelect
       ['current', 'Selected PDF', 'One report for the current workspace'],
       ['separate', 'Each PDF separately', 'Independent questions and report per PDF'],
       ['combined', 'Combined PDFs', 'One set of questions across all chosen PDFs'],
-    ] as const).map(([value, label, help]) => <label key={value} className={`profile ${mode === value ? 'selected' : ''}`}>
-      <input type="radio" name="pdf-scope" checked={mode === value} disabled={disabled} onChange={() => setMode(value)}/><strong>{label}</strong><small>{help}</small>
-    </label>)}</fieldset>
+    ] as const).map(([value, label, help]) => {
+      const isUnavailable = value !== 'current' && originals.length < 2
+      return <label key={value} className={`profile ${mode === value ? 'selected' : ''}`}>
+        <input type="radio" name="pdf-scope" checked={mode === value} disabled={disabled || isUnavailable} onChange={() => setMode(value)}/><strong>{label}</strong><small>{isUnavailable ? 'Requires at least 2 original PDFs in your library' : help}</small>
+      </label>
+    })}</fieldset>
     {mode !== 'current' ? <><fieldset className="row wrap"><legend>Select 2–3 original PDFs</legend>{originals.map(document => <label className="checkbox" key={document.id}>
       <input type="checkbox" checked={selected.includes(document.id)} disabled={disabled || selected.length >= 3 && !selected.includes(document.id)}
         onChange={event => setSelected(event.target.checked ? [...selected, document.id] : selected.filter(id => id !== document.id))}/>{document.name}

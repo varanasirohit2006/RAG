@@ -226,6 +226,31 @@ def test_judge_failure_is_partial_with_denominators(runtime):
     assert summary.iloc[0]["judge_seconds"] > 0
 
 
+@pytest.mark.parametrize("stage", ["generator", "judge"])
+def test_proxy_endpoint_changes_invalidate_run_and_stage_caches(runtime, monkeypatch, stage):
+    db_dir, output, state = runtime
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:31415/v1")
+    if stage == "generator":
+        monkeypatch.setenv("GENERATION_PROVIDER", "openai")
+        monkeypatch.setenv("GENERATION_MODEL", "auto:fast")
+    else:
+        monkeypatch.setenv("EVALUATION_PROVIDER", "openai")
+        monkeypatch.setenv("EVALUATION_MODEL", "auto:fast")
+    first = asyncio.run(evaluation.run_evaluation(str(db_dir), dataset=[row()], output_dir=output))
+    before = dict(state)
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:31416/v1")
+    second = asyncio.run(evaluation.run_evaluation(str(db_dir), dataset=[row()], output_dir=output))
+    assert first.attrs["run_key"] != second.attrs["run_key"]
+    assert second.attrs["cache_reused"] is False
+    assert second.attrs["configuration"][stage + "_base_url"] == "http://127.0.0.1:31416/v1"
+    assert any("Automatic model routing" in warning for warning in second.attrs["warnings"])
+    if stage == "generator":
+        assert state["generation_calls"] > before["generation_calls"]
+    else:
+        assert state["judge_calls"] > before["judge_calls"]
+        assert state["generation_calls"] == before["generation_calls"]
+
+
 def test_reranker_changes_invalidate_the_completed_run_cache(runtime, monkeypatch):
     db_dir, output, state = runtime
     monkeypatch.delenv("RERANKER_PROVIDER", raising=False)
@@ -365,7 +390,8 @@ def test_gemma_adapter_does_not_score_truncated_verdicts():
     adapter = create_google_json_llm(JudgeSettings(), model=Model())
     with pytest.raises(ValueError, match="truncated"):
         asyncio.run(adapter.agenerate("Judge the statement.", Verdict))
-    assert adapter.usage["structured_generation_requests"] == 1
+    assert adapter.usage["structured_generation_requests"] == 2
+    assert adapter.usage['truncation_retries'] == 1
 
 
 def test_scheduling_alternates_strategies_instead_of_using_keyword_first(runtime, monkeypatch):

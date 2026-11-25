@@ -43,6 +43,12 @@ export function useJob<T>(slot: string) {
   const [job, setJob] = useState<Job<T> | null>(null)
   const [connectionError, setConnectionError] = useState<string | null>(null)
   useEffect(() => {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(storageKey) || 'null')
+      setInfo(value && /^[a-f0-9]{32}$/.test(value.id) && /^[a-f0-9]{32}$/.test(value.document_id) && typeof value.kind === 'string' ? value : null)
+    } catch { setInfo(null) }
+  }, [storageKey])
+  useEffect(() => {
     const receive = (event: Event) => {
       const detail = (event as CustomEvent<{ slot: string; info: JobInfo }>).detail
       if (detail.slot === slot) { setInfo(detail.info); setConnectionError(null) }
@@ -62,7 +68,10 @@ export function useJob<T>(slot: string) {
       setJob(value); setConnectionError(null)
       if (['succeeded', 'failed', 'cancelled'].includes(value.status)) { events.close(); if (fallback) clearInterval(fallback) }
     }
-    events.onmessage = event => receive(JSON.parse(event.data))
+    events.onmessage = event => {
+      try { receive(JSON.parse(event.data)) }
+      catch { if (!disposed) setConnectionError('Malformed job event received') }
+    }
     events.onerror = () => {
       events.close()
       const poll = async () => {

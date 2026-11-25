@@ -1,0 +1,868 @@
+{
+  "schema_version": 2,
+  "run_id": "c0962c8b903029be",
+  "run_key": "c0962c8b903029be47a7feff1a75c3633450bf6c325e34708939ccb8073831c7",
+  "status": "partial",
+  "started_at": "2026-11-25T13:05:29.043128+00:00",
+  "profile": "full",
+  "total_questions": 5,
+  "sampled_questions": 5,
+  "samples": 20,
+  "strategies": [
+    "Keyword",
+    "Vector",
+    "Hybrid",
+    "Reranking"
+  ],
+  "document_hash": "65f6921adb3976f1c44d9eb1574d3b8ede189fc96d53fec0c878f483368571d0",
+  "corpus_version": "a1e2ff7360a79c721b23d54a3b4ccdf0c3b855e3ec22b76ad0968869b0e58fbe",
+  "configuration": {
+    "implementation_revision": "aa49b559db08f419530eba5d848d2f3c5220a5375d78d1c03f413e0858d7a4a2",
+    "package_versions": {
+      "ragas": "0.4.3",
+      "langchain-google-genai": "4.4.0",
+      "langchain-openai": "1.2.1",
+      "openai": "2.36.0",
+      "sentence-transformers": "5.5.0"
+    },
+    "index_path": "C:\\Users\\varan\\OneDrive\\Desktop\\rag_eval\\RAG\\db\\chroma_5088052a90978460ed584752c9d4db02ead5f2d11eb7739fdaecff0306992aa9",
+    "document_hash": "65f6921adb3976f1c44d9eb1574d3b8ede189fc96d53fec0c878f483368571d0",
+    "corpus_version": "a1e2ff7360a79c721b23d54a3b4ccdf0c3b855e3ec22b76ad0968869b0e58fbe",
+    "profile": "full",
+    "strategies": [
+      "Keyword",
+      "Vector",
+      "Hybrid",
+      "Reranking"
+    ],
+    "corpus_type": "single_pdf",
+    "source_documents": [],
+    "index_configuration": {
+      "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+      "embedding_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "pipeline_version": "fast-v3",
+      "chunk_config_version": "native-v3"
+    },
+    "dataset": [
+      {
+        "id": "auto-62c7d1db41983934",
+        "question": "What is the title of the book that serves as a 100-chapter reference covering retrieval metrics, generation quality, judges, benchmarks, tooling, human evaluation, production monitoring, and domain playbooks?",
+        "reference_answer": "RAG Evaluation Handbook",
+        "document_hash": "65f6921adb3976f1c44d9eb1574d3b8ede189fc96d53fec0c878f483368571d0",
+        "answerable": true,
+        "reference_pages": [
+          1
+        ],
+        "relevant_chunk_ids": [
+          "f7b6e09024202f185ec210179c981797d9b2b56ad5e6c06266e68386b3e0713d"
+        ],
+        "relevance_grades": {},
+        "relevant_chunk_groups": [
+          [
+            "f7b6e09024202f185ec210179c981797d9b2b56ad5e6c06266e68386b3e0713d"
+          ]
+        ]
+      },
+      {
+        "id": "auto-db5e2fdb3e3b3fc4",
+        "question": "What is the purpose of transforming queries in traces to enable the attribution of production regressions to a specific stage?",
+        "reference_answer": "The purpose of transforming queries in traces is to enable the attribution of production regressions to a specific stage.",
+        "document_hash": "65f6921adb3976f1c44d9eb1574d3b8ede189fc96d53fec0c878f483368571d0",
+        "answerable": true,
+        "reference_pages": [
+          23
+        ],
+        "relevant_chunk_ids": [
+          "0818638c68f7b949b06f807a8d6389c95f3006c3260fa305df4d3856e8efbcd7"
+        ],
+        "relevance_grades": {},
+        "relevant_chunk_groups": [
+          [
+            "0818638c68f7b949b06f807a8d6389c95f3006c3260fa305df4d3856e8efbcd7"
+          ]
+        ]
+      },
+      {
+        "id": "auto-0b382df713f9ba4a",
+        "question": "What are the ethical obligations of annotators in evaluation pipelines, and how are they addressed in the document?",
+        "reference_answer": "The ethical obligations of annotators in evaluation pipelines include privacy, consent and notice, access control, and third-party exposure. Annotators are exposed to toxic, violent, or disturbing content by design, and must be informed about content nature before assignment. Obligations include rotation limits, mandatory breaks for heavy-content queues, opt-out without penalty, access to support resources, and compensation that reflects the burden. Exposure hours per rater are tracked as an operational limit, not an afterthought. For general annotation, fair pay and reasonable throughput targets are quality issues too — exploited raters produce drifted labels (Chapter 77).",
+        "document_hash": "65f6921adb3976f1c44d9eb1574d3b8ede189fc96d53fec0c878f483368571d0",
+        "answerable": true,
+        "reference_pages": [
+          83
+        ],
+        "relevant_chunk_ids": [
+          "c33f6d4ac2b118aa4092625b99ffeb79c8b72b8de520f4fb85d2a48dc558e50d"
+        ],
+        "relevance_grades": {},
+        "relevant_chunk_groups": [
+          [
+            "c33f6d4ac2b118aa4092625b99ffeb79c8b72b8de520f4fb85d2a48dc558e50d"
+          ]
+        ]
+      },
+      {
+        "id": "auto-fcb97174a5d0df80",
+        "question": "What are the three measurement layers used in RAG evaluation and how are they defined?",
+        "reference_answer": "The three measurement layers in RAG evaluation are retrieval quality, generation quality, and end-to-end quality. Retrieval quality assesses whether the right documents appear in the context window, measured with ranking metrics such as recall@k and nDCG. Generation quality asks whether the answer is faithful to the retrieved evidence, relevant to the question, and complete. End-to-end quality asks whether the user's actual task succeeds, which may tolerate imperfect intermediate steps.",
+        "document_hash": "65f6921adb3976f1c44d9eb1574d3b8ede189fc96d53fec0c878f483368571d0",
+        "answerable": true,
+        "reference_pages": [
+          2
+        ],
+        "relevant_chunk_ids": [
+          "3c762c0ad6834e9369d797c40cc752be2c43fcff10198ff9b63a11010b846e5f"
+        ],
+        "relevance_grades": {},
+        "relevant_chunk_groups": [
+          [
+            "3c762c0ad6834e9369d797c40cc752be2c43fcff10198ff9b63a11010b846e5f"
+          ]
+        ]
+      },
+      {
+        "id": "auto-59d359b8f4957c00",
+        "question": "What is the empirical fact used in stability testing that distinguishes grounded answers from fabrications, and how does it relate to the reliability of a system in generating answers?",
+        "reference_answer": "The empirical fact used in stability testing is that grounded answers are reproducible, while fabrications are not. Sampling the same question multiple times and measuring agreement gives a reference-free signal of reliability — and a probe for system fragility. This fact is central to the evaluation of answer stability in RAG systems.",
+        "document_hash": "65f6921adb3976f1c44d9eb1574d3b8ede189fc96d53fec0c878f483368571d0",
+        "answerable": true,
+        "reference_pages": [
+          41
+        ],
+        "relevant_chunk_ids": [
+          "a933af31044adcf049286e5edc9bea5aca135880b2c76b871ca0769b3df1b731"
+        ],
+        "relevance_grades": {},
+        "relevant_chunk_groups": [
+          [
+            "a933af31044adcf049286e5edc9bea5aca135880b2c76b871ca0769b3df1b731"
+          ]
+        ]
+      }
+    ],
+    "selected_ids": [
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-0b382df713f9ba4a",
+      "auto-fcb97174a5d0df80",
+      "auto-59d359b8f4957c00"
+    ],
+    "dataset_provenance": {
+      "origin": "synthetic_source_verified",
+      "human_reviewed": false,
+      "source_document_coverage": [],
+      "created_at": "2026-11-25T13:05:28.635404+00:00",
+      "configuration": {
+        "schema_version": 1,
+        "document_hash": "65f6921adb3976f1c44d9eb1574d3b8ede189fc96d53fec0c878f483368571d0",
+        "corpus_version": "a1e2ff7360a79c721b23d54a3b4ccdf0c3b855e3ec22b76ad0968869b0e58fbe",
+        "source_fingerprint": "016032f8649ed5a71dd607b39902fd13c69fadeba28fe2985362b3657e3c7bd0",
+        "question_count": 5,
+        "implementation_revision": "8942506b41674892f0c36821e4bff25f85a705f8324c073ad4ac1b42568dccba",
+        "draft_provider": "ollama",
+        "draft_model": "qwen3-vl:2b-instruct",
+        "draft_timeout": 240,
+        "draft_request_timeout": 120,
+        "draft_max_tokens": 4096,
+        "draft_max_retries": 1,
+        "draft_retry_delay_seconds": 1.0,
+        "verifier": {
+          "provider": "ollama",
+          "model": "qwen3-vl:2b-instruct",
+          "timeout": 240,
+          "max_retries": 1,
+          "max_tokens": 8192,
+          "reasoning_effort": "minimal",
+          "request_timeout": 120
+        },
+        "independent_reference_verification": false,
+        "source_documents": [],
+        "removed_footer_labels": [
+          "RAG Evaluation Handbook"
+        ],
+        "provider_preflight": true,
+        "verifier_revision": "c79343dc3a22b86f135d621ddc8dbbf4c56d6ea1f32f8efa4d8cb297ed15212a",
+        "evidence_revision": "e0854733905ee17f94d649146c0fd24c8059f6bb40d5b82108bb284b61f99b91"
+      },
+      "requested_questions": 5,
+      "verified_questions": 5,
+      "rejected_candidates": [
+        {
+          "candidate": 3,
+          "stage": "draft_validation",
+          "model": "qwen3-vl:2b-instruct",
+          "reason": "EvaluationDataError: A generated supporting quote does not occur in its source chunk.",
+          "model_request_failed": false,
+          "sequence": 1,
+          "provider_status_code": null,
+          "model_request_timed_out": false
+        },
+        {
+          "candidate": 4,
+          "stage": "draft_validation",
+          "model": "qwen3-vl:2b-instruct",
+          "reason": "ValueError: Judge did not return one complete schema-valid JSON object.",
+          "model_request_failed": false,
+          "sequence": 2,
+          "provider_status_code": null,
+          "model_request_timed_out": false
+        },
+        {
+          "candidate": 7,
+          "stage": "draft_validation",
+          "model": "qwen3-vl:2b-instruct",
+          "reason": "ValueError: Judge did not return one complete schema-valid JSON object.",
+          "model_request_failed": false,
+          "sequence": 3,
+          "provider_status_code": null,
+          "model_request_timed_out": false
+        }
+      ],
+      "work_counts": {
+        "drafting_operations": 8,
+        "verification_operations": 5
+      },
+      "draft_request_attempts": 8,
+      "verifier_usage": {
+        "structured_generation_requests": 5,
+        "json_repairs": 0,
+        "provider_retries": 0,
+        "request_seconds": 169.08391619999975,
+        "token_usage_requests": 5,
+        "input_tokens": 4975,
+        "output_tokens": 655,
+        "total_tokens": 5630,
+        "quota_rejections": 0,
+        "requests_blocked_by_quota": 0,
+        "response_cache_hits": 0,
+        "queue_wait_seconds": 0.0,
+        "truncation_retries": 0,
+        "resolved_models": [
+          "qwen3-vl:2b-instruct"
+        ]
+      },
+      "resolved_draft_models": [
+        "qwen3-vl:2b-instruct"
+      ],
+      "provider_limit": null,
+      "seconds": 668.532,
+      "categories": [
+        "factual",
+        "paraphrase"
+      ],
+      "source_chunks": 136,
+      "covered_source_chunks": 5
+    },
+    "generator_provider": "ollama",
+    "generator_model": "qwen3-vl:2b-instruct",
+    "judge": {
+      "provider": "ollama",
+      "model": "qwen3-vl:2b-instruct",
+      "timeout": 240,
+      "max_retries": 1,
+      "max_tokens": 8192,
+      "reasoning_effort": "minimal",
+      "request_timeout": 120
+    },
+    "metric_timeout_seconds": 900,
+    "retrieval_k": 10,
+    "metric_k": 3,
+    "generation_limits": {
+      "GENERATION_MAX_CONTEXT_CHARS": null,
+      "GENERATION_MAX_IMAGES": null,
+      "GENERATION_MAX_OUTPUT_TOKENS": "4096",
+      "MODEL_TIMEOUT_SECONDS": "240",
+      "GENERATION_IMAGE_MAX_DIM": null,
+      "GENERATION_THINKING_BUDGET": null,
+      "GENERATION_MAX_RETRIES": "1",
+      "GENERATION_RETRY_DELAY_SECONDS": "1",
+      "GENERATION_REQUEST_TIMEOUT_SECONDS": "120"
+    },
+    "reranker": {
+      "provider": "cohere",
+      "model": "rerank-english-v3.0",
+      "timeout_seconds": 15,
+      "credentials_available": true
+    },
+    "provider_preflight": true,
+    "judge_rubric_version": "partial-evidence-v2"
+  },
+  "corpus_type": "single_pdf",
+  "source_documents": [],
+  "scope": "all generated cases",
+  "warnings": [
+    "References are synthetic and automatically source-verified; they are not human-reviewed ground truth.",
+    "Relevant labels include exact repeated supporting passages. Equivalent passages are alternatives for recall; other semantic alternatives still need human review.",
+    "Automatic questions currently use indexed text and extracted table text; chart/visual-only and unanswerable cases are not generated.",
+    "The same model drafts and verifies these references. This is source checking, not independent verification or human-reviewed ground truth.",
+    "Generator and judge use the same model; an independent judge model is recommended.",
+    "Only 5 unique questions were evaluated. These scores are exploratory and do not establish a strategy winner."
+  ],
+  "metric_catalog": {
+    "faithfulness": {
+      "label": "Faithfulness",
+      "description": "Fraction of answer claims supported by the exact evidence supplied to the generator.",
+      "method": "Ragas judge",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "answer_relevancy": {
+      "label": "Answer relevancy",
+      "description": "Cosine similarity of the question to questions reconstructed from the answer, penalizing noncommittal answers. Negative cosine values are possible.",
+      "method": "Ragas judge + local embeddings",
+      "range": [
+        -1,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "context_precision": {
+      "label": "Context precision",
+      "description": "Rank-sensitive precision of retrieved text judged against the source reference answer.",
+      "method": "Ragas judge",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases with text evidence"
+    },
+    "context_recall": {
+      "label": "Context recall",
+      "description": "Fraction of reference answer claims supported by the retrieved text.",
+      "method": "Ragas judge",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases with text evidence"
+    },
+    "factual_correctness": {
+      "label": "Factual correctness",
+      "description": "Claim-level F1 of the generated answer against the source reference answer.",
+      "method": "Ragas judge",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "multimodal_faithfulness": {
+      "label": "Visual faithfulness",
+      "description": "Answer grounding in the actual text and image evidence; requires a judge with vision support.",
+      "method": "Ragas multimodal judge",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases with image evidence"
+    },
+    "precision_at_k": {
+      "label": "Precision@k",
+      "description": "Relevant unique retrieved chunks divided by the declared retrieval cutoff k. Missing slots count against precision.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "recall_at_k": {
+      "label": "Recall@k",
+      "description": "Fraction of source-labelled relevant evidence retrieved. With equivalent supporting-passage groups, one matching chunk covers each group; otherwise the denominator is the positive labelled chunk count.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "mrr": {
+      "label": "MRR",
+      "description": "Reciprocal rank of the first relevant chunk, or zero if none is retrieved.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "ndcg_at_k": {
+      "label": "nDCG@k",
+      "description": "Discounted graded relevance of the retrieved ranking relative to the ideal source-labelled ranking.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "hit_rate_at_k": {
+      "label": "Hit rate@k",
+      "description": "One when at least one relevant chunk appears in the first k unique results, otherwise zero.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "map_at_k": {
+      "label": "MAP@k",
+      "description": "Per-question average precision at relevant ranks divided by min(k, number of relevant chunks); the report averages these values.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "normalized_exact_match": {
+      "label": "Exact match",
+      "description": "Exact reference match after Unicode, case and whitespace normalization. This lexical diagnostic does not establish correctness.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "token_f1": {
+      "label": "Token F1",
+      "description": "Lexical token overlap F1 against the reference; preserves numeric differences and does not measure semantic correctness.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "citation_page_validity": {
+      "label": "Citation page validity",
+      "description": "Fraction of cited page numbers present in the actual retrieved evidence. Structural validity does not establish claim support.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "citation_page_coverage": {
+      "label": "Citation evidence-page coverage",
+      "description": "Fraction of labelled reference pages mentioned in citations. Equivalent page alternatives count once when supplied. This is evidence-page coverage, not answer-claim coverage.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases with source page labels"
+    },
+    "citation_source_validity": {
+      "label": "Citation source validity",
+      "description": "Fraction of cited source numbers corresponding to actual generator sources. Structural validity does not establish semantic support.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "answerable cases"
+    },
+    "abstention_accuracy": {
+      "label": "Correct abstention",
+      "description": "Judge classification of whether an unanswerable response explicitly abstains without inventing an answer.",
+      "method": "structured judge",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "higher",
+      "applicability": "explicitly labelled unanswerable cases"
+    },
+    "false_answer_rate": {
+      "label": "False-answer rate",
+      "description": "One minus correct abstention, on explicitly labelled unanswerable cases only.",
+      "method": "derived from abstention judge",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "lower",
+      "applicability": "explicitly labelled unanswerable cases"
+    },
+    "failure_rate": {
+      "label": "Failed or partial attempt rate",
+      "description": "Failed or partial samples divided by completed, partial and failed attempts; cancelled samples are excluded.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "lower",
+      "applicability": "attempted samples"
+    },
+    "error_rate": {
+      "label": "Error rate",
+      "description": "Failed samples divided by completed, partial and failed attempts; cancelled samples are excluded.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "lower",
+      "applicability": "attempted samples"
+    },
+    "partial_rate": {
+      "label": "Partial-result rate",
+      "description": "Partial samples divided by completed, partial and failed attempts; cancelled samples are excluded.",
+      "method": "local",
+      "range": [
+        0,
+        1
+      ],
+      "direction": "lower",
+      "applicability": "attempted samples"
+    },
+    "retrieval_seconds": {
+      "label": "Retrieval seconds",
+      "description": "Measured duration, including completed and failed attempts with recorded timing; cache replay remains included. p50/p95 use linear interpolation over observed values.",
+      "method": "wall clock",
+      "range": [
+        0,
+        null
+      ],
+      "direction": "lower",
+      "applicability": "samples with recorded duration"
+    },
+    "local_retrieval_seconds": {
+      "label": "Local retrieval seconds",
+      "description": "Measured duration, including completed and failed attempts with recorded timing; cache replay remains included. p50/p95 use linear interpolation over observed values.",
+      "method": "wall clock",
+      "range": [
+        0,
+        null
+      ],
+      "direction": "lower",
+      "applicability": "samples with recorded duration"
+    },
+    "reranking_seconds": {
+      "label": "Reranking seconds",
+      "description": "Measured duration, including completed and failed attempts with recorded timing; cache replay remains included. p50/p95 use linear interpolation over observed values.",
+      "method": "wall clock",
+      "range": [
+        0,
+        null
+      ],
+      "direction": "lower",
+      "applicability": "samples with recorded duration"
+    },
+    "generation_seconds": {
+      "label": "Generation seconds",
+      "description": "Measured duration, including completed and failed attempts with recorded timing; cache replay remains included. p50/p95 use linear interpolation over observed values.",
+      "method": "wall clock",
+      "range": [
+        0,
+        null
+      ],
+      "direction": "lower",
+      "applicability": "samples with recorded duration"
+    },
+    "judge_seconds": {
+      "label": "Judge seconds",
+      "description": "Measured duration, including completed and failed attempts with recorded timing; cache replay remains included. p50/p95 use linear interpolation over observed values.",
+      "method": "wall clock",
+      "range": [
+        0,
+        null
+      ],
+      "direction": "lower",
+      "applicability": "samples with recorded duration"
+    },
+    "sample_seconds": {
+      "label": "Sample seconds",
+      "description": "Measured duration, including completed and failed attempts with recorded timing; cache replay remains included. p50/p95 use linear interpolation over observed values.",
+      "method": "wall clock",
+      "range": [
+        0,
+        null
+      ],
+      "direction": "lower",
+      "applicability": "samples with recorded duration"
+    }
+  },
+  "dataset_provenance": {
+    "origin": "synthetic_source_verified",
+    "human_reviewed": false,
+    "source_document_coverage": [],
+    "created_at": "2026-11-25T13:05:28.635404+00:00",
+    "configuration": {
+      "schema_version": 1,
+      "document_hash": "65f6921adb3976f1c44d9eb1574d3b8ede189fc96d53fec0c878f483368571d0",
+      "corpus_version": "a1e2ff7360a79c721b23d54a3b4ccdf0c3b855e3ec22b76ad0968869b0e58fbe",
+      "source_fingerprint": "016032f8649ed5a71dd607b39902fd13c69fadeba28fe2985362b3657e3c7bd0",
+      "question_count": 5,
+      "implementation_revision": "8942506b41674892f0c36821e4bff25f85a705f8324c073ad4ac1b42568dccba",
+      "draft_provider": "ollama",
+      "draft_model": "qwen3-vl:2b-instruct",
+      "draft_timeout": 240,
+      "draft_request_timeout": 120,
+      "draft_max_tokens": 4096,
+      "draft_max_retries": 1,
+      "draft_retry_delay_seconds": 1.0,
+      "verifier": {
+        "provider": "ollama",
+        "model": "qwen3-vl:2b-instruct",
+        "timeout": 240,
+        "max_retries": 1,
+        "max_tokens": 8192,
+        "reasoning_effort": "minimal",
+        "request_timeout": 120
+      },
+      "independent_reference_verification": false,
+      "source_documents": [],
+      "removed_footer_labels": [
+        "RAG Evaluation Handbook"
+      ],
+      "provider_preflight": true,
+      "verifier_revision": "c79343dc3a22b86f135d621ddc8dbbf4c56d6ea1f32f8efa4d8cb297ed15212a",
+      "evidence_revision": "e0854733905ee17f94d649146c0fd24c8059f6bb40d5b82108bb284b61f99b91"
+    },
+    "requested_questions": 5,
+    "verified_questions": 5,
+    "rejected_candidates": [
+      {
+        "candidate": 3,
+        "stage": "draft_validation",
+        "model": "qwen3-vl:2b-instruct",
+        "reason": "EvaluationDataError: A generated supporting quote does not occur in its source chunk.",
+        "model_request_failed": false,
+        "sequence": 1,
+        "provider_status_code": null,
+        "model_request_timed_out": false
+      },
+      {
+        "candidate": 4,
+        "stage": "draft_validation",
+        "model": "qwen3-vl:2b-instruct",
+        "reason": "ValueError: Judge did not return one complete schema-valid JSON object.",
+        "model_request_failed": false,
+        "sequence": 2,
+        "provider_status_code": null,
+        "model_request_timed_out": false
+      },
+      {
+        "candidate": 7,
+        "stage": "draft_validation",
+        "model": "qwen3-vl:2b-instruct",
+        "reason": "ValueError: Judge did not return one complete schema-valid JSON object.",
+        "model_request_failed": false,
+        "sequence": 3,
+        "provider_status_code": null,
+        "model_request_timed_out": false
+      }
+    ],
+    "work_counts": {
+      "drafting_operations": 8,
+      "verification_operations": 5
+    },
+    "draft_request_attempts": 8,
+    "verifier_usage": {
+      "structured_generation_requests": 5,
+      "json_repairs": 0,
+      "provider_retries": 0,
+      "request_seconds": 169.08391619999975,
+      "token_usage_requests": 5,
+      "input_tokens": 4975,
+      "output_tokens": 655,
+      "total_tokens": 5630,
+      "quota_rejections": 0,
+      "requests_blocked_by_quota": 0,
+      "response_cache_hits": 0,
+      "queue_wait_seconds": 0.0,
+      "truncation_retries": 0,
+      "resolved_models": [
+        "qwen3-vl:2b-instruct"
+      ]
+    },
+    "resolved_draft_models": [
+      "qwen3-vl:2b-instruct"
+    ],
+    "provider_limit": null,
+    "seconds": 668.532,
+    "categories": [
+      "factual",
+      "paraphrase"
+    ],
+    "source_chunks": 136,
+    "covered_source_chunks": 5
+  },
+  "dataset_warnings": [
+    "References are synthetic and automatically source-verified; they are not human-reviewed ground truth.",
+    "Relevant labels include exact repeated supporting passages. Equivalent passages are alternatives for recall; other semantic alternatives still need human review.",
+    "Automatic questions currently use indexed text and extracted table text; chart/visual-only and unanswerable cases are not generated.",
+    "The same model drafts and verifies these references. This is source checking, not independent verification or human-reviewed ground truth."
+  ],
+  "timing_scope": "Per-stage timings include measured failed attempts and cache replay. Sample durations exclude queue wait; report seconds measure the overall evaluation run.",
+  "comparison_method": "Matched means use only the same questions successfully scored for that metric in every selected strategy.",
+  "retrieval_label_method": "Precision and ranking use labelled chunks; recall accepts one hit from each equivalent supporting-passage group when groups are present.",
+  "model_preflight": [],
+  "finished_at": "2026-11-25T15:00:19.579473+00:00",
+  "seconds": 6890.536,
+  "failed_samples": 4,
+  "skipped_samples": 0,
+  "cache_hits": 12,
+  "completed_samples": 16,
+  "partial_samples": 4,
+  "answer_failed_samples": 0,
+  "work_counts": {
+    "generation_operations": 18,
+    "judge_metric_operations": 90
+  },
+  "judge_usage": {
+    "structured_generation_requests": 149,
+    "json_repairs": 0,
+    "provider_retries": 0,
+    "request_seconds": 6184.065978700002,
+    "token_usage_requests": 146,
+    "input_tokens": 188445,
+    "output_tokens": 30260,
+    "total_tokens": 218705,
+    "quota_rejections": 0,
+    "requests_blocked_by_quota": 0,
+    "response_cache_hits": 82,
+    "queue_wait_seconds": 0.0,
+    "truncation_retries": 0,
+    "resolved_models": [
+      "qwen3-vl:2b-instruct"
+    ]
+  },
+  "matched_question_ids": {
+    "answer_relevancy": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "citation_page_coverage": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "citation_page_validity": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "citation_source_validity": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "context_precision": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "context_recall": [
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "factual_correctness": [
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "faithfulness": [
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "hit_rate_at_k": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "map_at_k": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "mrr": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "ndcg_at_k": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "normalized_exact_match": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "precision_at_k": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "recall_at_k": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ],
+    "token_f1": [
+      "auto-0b382df713f9ba4a",
+      "auto-59d359b8f4957c00",
+      "auto-62c7d1db41983934",
+      "auto-db5e2fdb3e3b3fc4",
+      "auto-fcb97174a5d0df80"
+    ]
+  }
+}

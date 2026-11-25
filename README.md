@@ -59,6 +59,54 @@ when an independent comparison is needed. Cohere reranking is optional and uses
 Optional OpenRouter generation/judging still requires fixed `:free` model IDs,
 zero-price routing and an explicitly configured `OPENROUTER_API_KEY`.
 
+An OpenAI-compatible proxy such as FreeLLMAPI can handle the entire model workflow.
+Keep the proxy running and replace the active provider/model settings in `.env`:
+
+```dotenv
+OPENAI_API_KEY=your_unified_proxy_key
+OPENAI_BASE_URL=http://127.0.0.1:31415/v1
+GENERATION_PROVIDER=openai
+GENERATION_MODEL=gemini-3.5-flash-lite
+SYNTHETIC_GENERATION_PROVIDER=openai
+SYNTHETIC_GENERATION_MODEL=gemini-3.5-flash-lite
+EVALUATION_PROVIDER=openai
+EVALUATION_MODEL=llama-3.3-70b
+SYNTHETIC_ALLOW_SAME_MODEL_VERIFICATION=false
+EVALUATION_PROVIDER_PREFLIGHT=true
+MODEL_TIMEOUT_SECONDS=240
+GENERATION_REQUEST_TIMEOUT_SECONDS=120
+SYNTHETIC_GENERATION_TIMEOUT=240
+SYNTHETIC_REQUEST_TIMEOUT_SECONDS=120
+EVALUATION_TIMEOUT=240
+EVALUATION_REQUEST_TIMEOUT=120
+EVALUATION_METRIC_TIMEOUT=900
+EVALUATION_MAX_TOKENS=8192
+```
+
+`auto` / `auto:fast` routing can change the underlying model between requests.
+Use an available fixed model ID for repeatable quality comparisons. The preset
+uses separate fixed models; availability depends on the proxy's upstream keys and
+quotas. A 20-second check per model stops blocked work before drafting/scoring;
+successful checks are reused for five minutes. It does not establish judge accuracy.
+Proxy answers
+use extracted text and tables; unknown routes do not receive images. Drafts still
+need exact source quotes and a passing verification verdict, and proxy judging
+validates complete JSON without requiring tool calling. Embeddings remain local.
+
+Model transport timeouts fit inside the 240-second step budget, allowing one bounded
+retry for transient timeouts/5xx errors. Judge JSON requests start with a smaller
+output allowance and increase it on a complete redraft after truncation, up to the
+configured maximum. Partial JSON is never scored. Automatic drafting removes
+recurring page footers, excludes generic title questions and recognizes exact,
+subject-specific repeated supporting passages as alternative evidence for recall.
+Semantic alternatives still require human review.
+
+Answer-quality comparison defaults to the same successfully scored questions in
+every strategy, separately for each metric. The report also exposes all valid
+means and their failures/skips. Fresh latency excludes reused work and unsuccessful
+stages; total operation time includes drafting. A small synthetic set remains an
+exploratory workflow check, not a calibrated performance claim.
+
 Ollama can also handle drafting, answers, verification and scoring without a
 cloud model key. Set `GENERATION_PROVIDER`, `SYNTHETIC_GENERATION_PROVIDER` and
 `EVALUATION_PROVIDER` to `ollama`; set all three model settings and

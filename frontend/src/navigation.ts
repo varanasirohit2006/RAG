@@ -12,7 +12,7 @@ export type Page = keyof typeof pages
 export const pageHref = (page: Page) => `#/${page}`
 
 function currentPage(): Page {
-  const name = window.location.hash.slice(2).split('?')[0]
+  const name = window.location.hash.slice(2).split('?')[0].split('/')[0]
   return name in pages ? name as Page : 'evaluation'
 }
 

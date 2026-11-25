@@ -135,6 +135,23 @@ def test_explicit_same_model_generation_is_labelled_as_source_checking(runtime, 
     assert any('not independent verification' in warning for warning in dataset['warnings'])
 
 
+@pytest.mark.parametrize('allow_same', [False, True])
+def test_different_automatic_routing_aliases_cannot_claim_independent_verification(runtime, monkeypatch, allow_same):
+    monkeypatch.setenv('GENERATION_PROVIDER', 'openai')
+    monkeypatch.setenv('GENERATION_MODEL', 'auto')
+    monkeypatch.setenv('EVALUATION_PROVIDER', 'openai')
+    monkeypatch.setenv('EVALUATION_MODEL', 'auto:fast')
+    monkeypatch.setenv('SYNTHETIC_ALLOW_SAME_MODEL_VERIFICATION', str(allow_same).lower())
+    if not allow_same:
+        with pytest.raises(EvaluationDataError, match='fixed model IDs'):
+            generate(runtime, question_count=1)
+        assert runtime[3]['draft_calls'] == 0
+    else:
+        dataset = generate(runtime, question_count=1)
+        assert dataset['provenance']['configuration']['independent_reference_verification'] is False
+        assert any('independent verification cannot be established' in warning for warning in dataset['warnings'])
+
+
 def test_combined_questions_balance_original_pdfs_and_report_reference_coverage(runtime, monkeypatch):
     db, output, documents, _ = runtime
     original_sources = [{'document_id': 'pdf-a', 'name': 'A.pdf'}, {'document_id': 'pdf-b', 'name': 'B.pdf'}]

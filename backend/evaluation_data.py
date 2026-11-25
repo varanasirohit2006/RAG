@@ -27,6 +27,7 @@ class EvaluationCase:
     reference_pages: tuple[int, ...] = ()
     relevant_chunk_ids: tuple[str, ...] = ()
     relevance_grades: tuple[tuple[str, float], ...] = ()
+    relevant_chunk_groups: tuple[tuple[str, ...], ...] = ()
 
     def to_dict(self):
         result = asdict(self)
@@ -88,6 +89,13 @@ def _case(row, index, shared_hash):
     if any(not isinstance(chunk_id, str) or not chunk_id.strip() for chunk_id in ids):
         raise EvaluationDataError(f"{case_id}: relevant_chunk_ids must contain non-empty strings.")
     ids = tuple(sorted({chunk_id.strip() for chunk_id in ids}))
+    groups = []
+    for group in _list_value(row.get('relevant_chunk_groups'), 'relevant_chunk_groups'):
+        if not isinstance(group, (list, tuple)) or not group or any(not isinstance(item, str) or not item.strip() for item in group):
+            raise EvaluationDataError(f'{case_id}: relevant_chunk_groups must contain non-empty lists of chunk IDs.')
+        groups.append(tuple(sorted({item.strip() for item in group})))
+    if groups and set(ids) != {item for group in groups for item in group}:
+        raise EvaluationDataError(f'{case_id}: relevant_chunk_groups must cover exactly the relevant_chunk_ids.')
     grades = row.get("relevance_grades") or {}
     if isinstance(grades, str):
         try:
@@ -108,9 +116,13 @@ def _case(row, index, shared_hash):
             raise EvaluationDataError(f"{case_id}: relevance grades must be finite numbers from 0 to 3.") from exc
         clean_grades.append((chunk_id, grade))
     ids = tuple(sorted(set(ids) | {chunk_id for chunk_id, grade in clean_grades if grade > 0}))
+    if groups and set(ids) != {item for group in groups for item in group}:
+        raise EvaluationDataError(f'{case_id}: evidence groups must cover all positive relevance labels.')
     if answerable and not (pages or ids):
         raise EvaluationDataError(f"{case_id}: answerable cases need reference_pages or relevant_chunk_ids as reviewed source evidence.")
-    return EvaluationCase(case_id, question, reference, document_hash, answerable, pages, ids, tuple(sorted(clean_grades)))
+    if groups and any(grade == 0 and chunk_id in ids for chunk_id, grade in clean_grades):
+        raise EvaluationDataError(f'{case_id}: evidence alternatives cannot be labelled as irrelevant.')
+    return EvaluationCase(case_id, question, reference, document_hash, answerable, pages, ids, tuple(sorted(clean_grades)), tuple(groups))
 
 
 def load_evaluation_dataset(data, *, format=None, expected_document_hash=None):
@@ -186,6 +198,11 @@ def document_id(document):
     return str((document.metadata or {}).get("chunk_id") or getattr(document, "id", None) or "")
 
 
+class RelevanceLabels(dict):
+    """Reviewed chunk grades with optional equivalent source-passage groups."""
+    groups = ()
+
+
 def resolve_relevance(case, documents):
     by_id = {document_id(document): document for document in documents}
     if "" in by_id:
@@ -199,7 +216,7 @@ def resolve_relevance(case, documents):
         raise EvaluationDataError(f"{case.id}: relevant_chunk_ids are absent from this index. Review labels after reindexing.")
     raw_grades = {chunk_id: 1.0 for chunk_id in case.relevant_chunk_ids}
     raw_grades.update(dict(case.relevance_grades))
-    grades = {}
+    grades = RelevanceLabels()
     for chunk_id, grade in raw_grades.items():
         primary = canonical[chunk_id]
         grades[primary] = max(grades.get(primary, grade), grade)
@@ -211,6 +228,7 @@ def resolve_relevance(case, documents):
                 grades[chunk_id] = 1.0
     if case.answerable and not any(grade > 0 for grade in grades.values()):
         raise EvaluationDataError(f"{case.id}: no reviewed reference pages/chunks resolve in this index.")
+    grades.groups = tuple(frozenset(canonical[item] for item in group) for group in case.relevant_chunk_groups)
     return grades
 
 
@@ -224,12 +242,21 @@ def retrieval_metrics(retrieved_ids, grades, *, k=5):
     ranked = list(dict.fromkeys(retrieved_ids))[:k]
     hits = [chunk_id in relevant for chunk_id in ranked]
     gains = [float(grades.get(chunk_id, 0)) for chunk_id in ranked]
-    ideal = sorted((float(value) for value in grades.values()), reverse=True)[:k]
+    groups = getattr(grades, 'groups', ())
+    if groups:
+        grouped_ids = set().union(*groups)
+        group_max_grades = [max((float(grades.get(chunk_id, 0)) for chunk_id in group), default=0.0) for group in groups]
+        ungrouped_grades = [float(grade) for chunk_id, grade in grades.items() if chunk_id not in grouped_ids]
+        ideal_grades = [g for g in group_max_grades + ungrouped_grades if g > 0]
+        ideal = sorted(ideal_grades, reverse=True)[:k]
+    else:
+        ideal = sorted((float(value) for value in grades.values()), reverse=True)[:k]
     dcg = sum((2 ** grade - 1) / math.log2(position + 2) for position, grade in enumerate(gains))
     idcg = sum((2 ** grade - 1) / math.log2(position + 2) for position, grade in enumerate(ideal))
     return {
         "precision_at_k": sum(hits) / k,
-        "recall_at_k": sum(hits) / len(relevant),
+        "recall_at_k": sum(bool(group & set(ranked)) for group in grades.groups) / len(grades.groups)
+            if getattr(grades, 'groups', ()) else sum(hits) / len(relevant),
         "mrr": next((1 / position for position, hit in enumerate(hits, 1) if hit), 0.0),
         "ndcg_at_k": dcg / idcg if idcg else 0.0,
     }

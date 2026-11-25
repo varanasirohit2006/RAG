@@ -60,6 +60,7 @@ def test_openai_compatible_client_honors_configured_timeout(monkeypatch):
 
     calls = []
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: calls.append(kwargs) or object())
     # Keep the real metrics construction while replacing network clients only.
     llm = create_google_json_llm(JudgeSettings(), model=Model([]))

@@ -15,8 +15,11 @@ def warm_runtime():
     from backend.generation_runtime import get_generation_model, resolve_provider
     from backend.retrieval_runtime import get_reranker
     provider = resolve_provider()
-    if provider == 'ollama' or (provider == 'google' and os.getenv('GOOGLE_API_KEY')) or (provider == 'openrouter' and os.getenv('OPENROUTER_API_KEY')):
-        get_generation_model()
+    if provider == 'ollama' or (provider == 'google' and os.getenv('GOOGLE_API_KEY')) or (provider == 'openrouter' and os.getenv('OPENROUTER_API_KEY')) or (provider == 'openai' and os.getenv('OPENAI_API_KEY')):
+        try:
+            get_generation_model()
+        except Exception as exc:
+            print(f'Optional generation setup deferred ({type(exc).__name__}).', flush=True)
     try:
         get_reranker(top_n=int(os.getenv('RETRIEVAL_TOP_N', '3')))
     except Exception as exc:

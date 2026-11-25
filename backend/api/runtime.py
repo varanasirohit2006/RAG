@@ -33,7 +33,7 @@ def read_summary(path):
     invalid = set()
     for row in rows:
         for name in METRICS:
-            for key in (name, name + '_lower95', name + '_upper95'):
+            for key in (name, name + '_lower95', name + '_upper95', name + '_matched', name + '_matched_lower95', name + '_matched_upper95'):
                 if key not in row or pd.isna(row[key]):
                     continue
                 try:

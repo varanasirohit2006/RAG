@@ -141,6 +141,9 @@ def build_vector_store(documents, directory, embedding, *, progress_callback=Non
             previous.get("embedding_model") != embedding_name()
             or previous.get("embedding_revision", "") != embedding_revision()
         )
+        if embedding_changed and existing_ids:
+            db.delete(ids=list(existing_ids))
+            existing_ids = set()
         pending = [
             document for document in documents
             if embedding_changed or document.metadata["chunk_id"] not in existing_ids

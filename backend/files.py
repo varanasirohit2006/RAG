@@ -14,6 +14,8 @@ def read_json(path):
 
 
 def write_json(path, value, *, indent=2):
+    import time
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -22,6 +24,13 @@ def write_json(path, value, *, indent=2):
             json.dumps(value, ensure_ascii=False, indent=indent, allow_nan=False) + "\n",
             encoding="utf-8",
         )
-        temporary.replace(path)
+        for attempt in range(3):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05 * (2 ** attempt))
     finally:
         temporary.unlink(missing_ok=True)

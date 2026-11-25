@@ -8,14 +8,17 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from contextvars import ContextVar
 from functools import lru_cache
 
 from backend.evaluation_data import validate_score
-from backend.provider_limits import (cache_root, ensure_openrouter_available,
+from backend.provider_limits import (cache_root, ensure_openrouter_available, provider_timeout,
                              limit_message, provider_status_code, record_openrouter_limit)
 from backend.files import read_json, write_json
 
 JUDGE_API_KEYS = {"google": "GOOGLE_API_KEY", "openai": "OPENAI_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
+JUDGE_RUBRIC_VERSION = "partial-evidence-v2"
+_request_usage = ContextVar('judge_request_usage', default=None)
 
 
 class JudgeQuotaExceeded(RuntimeError):
@@ -36,6 +39,7 @@ class JudgeSettings:
     max_retries: int = 1
     max_tokens: int = 4096
     reasoning_effort: str = "minimal"
+    request_timeout: int | None = None
 
     def __post_init__(self):
         if self.provider not in {*JUDGE_API_KEYS, "ollama"}:
@@ -48,6 +52,8 @@ class JudgeSettings:
             raise ValueError("OpenRouter evaluation requires a fixed model ID ending in :free; paid models and random routers are disabled.")
         if not 15 <= self.timeout <= 300:
             raise ValueError("EVALUATION_TIMEOUT must be between 15 and 300 seconds.")
+        if self.request_timeout is not None and not 15 <= self.request_timeout <= self.timeout:
+            raise ValueError("EVALUATION_REQUEST_TIMEOUT must be between 15 seconds and EVALUATION_TIMEOUT.")
         if not 0 <= self.max_retries <= 2:
             raise ValueError("EVALUATION_MAX_RETRIES must be between 0 and 2.")
         if not 1024 <= self.max_tokens <= 8192:
@@ -64,7 +70,12 @@ class JudgeSettings:
             max_retries=int(os.getenv("EVALUATION_MAX_RETRIES", "1")),
             max_tokens=int(os.getenv("EVALUATION_MAX_TOKENS", "4096")),
             reasoning_effort=os.getenv("EVALUATION_REASONING_EFFORT", "minimal"),
+            request_timeout=int(os.environ['EVALUATION_REQUEST_TIMEOUT']) if os.getenv('EVALUATION_REQUEST_TIMEOUT') else None,
         )
+
+    @property
+    def transport_timeout(self):
+        return self.request_timeout or self.timeout
 
 
 def _parse_structured_text(content, response_model):
@@ -96,7 +107,7 @@ def create_google_json_llm(settings, *, model=None):
     if owned:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        options = dict(model=settings.model, temperature=0, timeout=settings.timeout,
+        options = dict(model=settings.model, temperature=0, timeout=getattr(settings, 'transport_timeout', settings.timeout),
             # The Google integration counts attempts: 1 disables SDK retries.
             # Retry transient failures here within the shared deadline/budget.
             max_retries=1, max_output_tokens=settings.max_tokens,
@@ -117,7 +128,7 @@ def create_ollama_json_llm(settings, *, model=None):
             model=settings.model, temperature=0,
             base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             num_predict=settings.max_tokens, num_ctx=max(8192, settings.max_tokens * 2),
-            keep_alive="10m", client_kwargs={"timeout": settings.timeout},
+            keep_alive="10m", client_kwargs={"timeout": getattr(settings, 'transport_timeout', settings.timeout)},
         )
     return create_json_judge_llm(settings, model=model,
         response_cache=cache_root() / 'judge_responses' if owned else None)
@@ -136,14 +147,26 @@ def create_openrouter_json_llm(settings, *, model=None):
         model = ChatOpenAI(
             model=settings.model, api_key=api_key,
             base_url="https://openrouter.ai/api/v1", temperature=0,
-            timeout=settings.timeout, max_retries=0, max_tokens=settings.max_tokens,
+            timeout=getattr(settings, 'transport_timeout', settings.timeout), max_retries=0, max_tokens=settings.max_tokens,
             use_responses_api=False,
             # LangChain caches its default async transport. Closing verification
             # must not close the transport later used by scoring/another run.
-            http_async_client=httpx.AsyncClient(timeout=settings.timeout),
+            http_async_client=httpx.AsyncClient(timeout=getattr(settings, 'transport_timeout', settings.timeout)),
             extra_body={"provider": {"max_price": {"prompt": 0, "completion": 0}}},
         )
     return create_json_judge_llm(settings, model=model, response_cache=cache_root() / 'judge_responses' if owned else None)
+
+
+def create_openai_json_llm(settings, *, model=None):
+    """Validate proxy verdicts without requiring support for tool calling."""
+    owned = model is None
+    if owned:
+        from backend.generation_runtime import create_openai_generation_model
+
+        model = create_openai_generation_model(settings.model, getattr(settings, 'transport_timeout', settings.timeout),
+            settings.max_tokens, asynchronous=True)
+    return create_json_judge_llm(settings, model=model,
+        response_cache=cache_root() / 'judge_responses' if owned else None)
 
 
 def create_json_judge_llm(settings, *, model, response_cache=None):
@@ -165,6 +188,7 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
                           "token_usage_requests": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
                           "quota_rejections": 0, "requests_blocked_by_quota": 0,
                           "response_cache_hits": 0, "queue_wait_seconds": 0.0}
+            self.usage.update(truncation_retries=0, resolved_models=[])
 
         def generate(self, prompt, response_model):
             try:
@@ -195,6 +219,7 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
             instruction = (
                 "Return exactly one valid JSON object matching the required schema. "
                 "Do not include analysis, markdown, or a partial JSON result. "
+                "Keep each reason to one short sentence; do not repeat the supplied passages. "
                 "Apply the evaluation instructions to the supplied data. Required JSON schema:\n" + schema
             )
             contents = [{"type": "text", "text": instruction}]
@@ -210,9 +235,13 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
             if response_cache:
                 import hashlib
                 identity = {'provider': settings.provider, 'model': settings.model,
-                            'max_tokens': settings.max_tokens, 'messages': contents}
+                            'max_tokens': settings.max_tokens, 'rubric_version': JUDGE_RUBRIC_VERSION,
+                            'messages': contents}
                 if settings.provider == 'ollama':
                     identity['base_url'] = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+                elif settings.provider == 'openai':
+                    from backend.generation_runtime import openai_base_url
+                    identity['base_url'] = getattr(model, "openai_api_base", None) or openai_base_url()
                 key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
                 cache_path = response_cache / (key + '.json')
                 saved = read_json(cache_path)
@@ -220,10 +249,22 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
                     try:
                         result = response_model.model_validate(saved['response'])
                         self.usage['response_cache_hits'] += 1
+                        resolved_model = saved.get('resolved_model')
+                        if isinstance(resolved_model, str) and resolved_model not in self.usage['resolved_models']:
+                            self.usage['resolved_models'].append(resolved_model)
+                        tracker = _request_usage.get()
+                        if tracker is not None:
+                            tracker['provider_cache_hits'] += 1
                         return result
                     except ValueError:
                         pass
             last_error = None
+            def contains_array(value):
+                if isinstance(value, dict):
+                    return value.get('type') == 'array' or any(contains_array(item) for item in value.values())
+                return isinstance(value, list) and any(contains_array(item) for item in value)
+
+            output_limit = min(settings.max_tokens, 2048 if contains_array(response_model.model_json_schema()) else 512)
             for attempt in range(settings.max_retries + 1):
                 started = time.perf_counter()
                 retry_error = None
@@ -237,8 +278,15 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
                         if settings.provider == 'openrouter':
                             ensure_openrouter_available()
                         self.usage["structured_generation_requests"] += 1
+                        tracker = _request_usage.get()
+                        if tracker is not None:
+                            tracker['provider_requests'] += 1
                         try:
                             options = {"format": ollama_json_schema(response_model)} if settings.provider == 'ollama' else {}
+                            if settings.provider == 'openai':
+                                from langchain_core.language_models.chat_models import BaseChatModel
+                                if isinstance(model, BaseChatModel):
+                                    options['max_tokens'] = output_limit
                             return await model.ainvoke([HumanMessage(content=contents)], **options)
                         except Exception as exc:
                             if provider_status_code(exc) == 429:
@@ -248,7 +296,7 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
                             raise
                     response = await invoke()
                 except Exception as exc:
-                    if provider_status_code(exc) not in {500, 502, 503, 504} or attempt == settings.max_retries:
+                    if (provider_status_code(exc) not in {500, 502, 503, 504} and not provider_timeout(exc)) or attempt == settings.max_retries:
                         raise
                     retry_error = exc
                 finally:
@@ -265,14 +313,22 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
                         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                             self.usage[name] += value
                 response_metadata = getattr(response, "response_metadata", None) or {}
+                resolved_model = response_metadata.get('model_name') or response_metadata.get('model')
+                if isinstance(resolved_model, str) and resolved_model not in self.usage['resolved_models']:
+                    self.usage['resolved_models'].append(resolved_model)
                 finish_reason = str(response_metadata.get("finish_reason") or response_metadata.get("done_reason", "")).upper()
                 if finish_reason in {"MAX_TOKENS", "LENGTH"}:
-                    # A truncated verdict must fail visibly, not be repaired by guessing missing fields.
+                    # Redraft the whole verdict within the existing budget; never parse a partial result.
+                    if attempt < settings.max_retries:
+                        output_limit = min(settings.max_tokens, output_limit * 2)
+                        self.usage['truncation_retries'] += 1
+                        contents.append({'type': 'text', 'text': 'The prior response was cut off. Redraft the complete JSON object from the original data. Omit explanations except required brief reasons; return no thinking or prose.'})
+                        continue
                     raise ValueError("Judge output was truncated; increase EVALUATION_MAX_TOKENS or shorten the dataset reference.")
                 try:
                     result = _parse_structured_text(response.content, response_model)
                     if cache_path:
-                        write_json(cache_path, {'response': result.model_dump(mode='json')})
+                        write_json(cache_path, {'response': result.model_dump(mode='json'), 'resolved_model': resolved_model})
                     return result
                 except ValueError as exc:
                     last_error = exc
@@ -290,6 +346,9 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
                 from backend.generation_runtime import close_ollama_model
                 await close_ollama_model(model)
                 return
+            http_async_client = getattr(model, "http_async_client", None)
+            if http_async_client is not None and hasattr(http_async_client, "aclose"):
+                await http_async_client.aclose()
             client = getattr(model, "client", None)
             aio = getattr(client, "aio", None)
             if aio is not None and hasattr(aio, "aclose"):
@@ -297,7 +356,12 @@ def create_json_judge_llm(settings, *, model, response_cache=None):
             else:
                 async_client = getattr(model, "root_async_client", None)
                 if async_client is not None:
-                    await async_client.close()
+                    if hasattr(async_client, "aclose"):
+                        await async_client.aclose()
+                    elif hasattr(async_client, "close"):
+                        res = async_client.close()
+                        if asyncio.iscoroutine(res):
+                            await res
 
     return JSONJudgeLLM()
 
@@ -333,14 +397,17 @@ class RagasJudge:
         elif self.settings.provider == "openrouter":
             self.llm = create_openrouter_json_llm(self.settings)
             self.client = self.llm
+        elif self.settings.provider == "openai" and os.getenv("OPENAI_BASE_URL", "").strip():
+            self.llm = create_openai_json_llm(self.settings)
+            self.client = self.llm
         else:
-            kwargs = {"api_key": api_key, "timeout": self.settings.timeout, "max_retries": 0}
+            kwargs = {"api_key": api_key, "timeout": self.settings.transport_timeout, "max_retries": 0}
             if self.settings.provider == "google":
                 kwargs["base_url"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
             self.client = AsyncOpenAI(**kwargs)
             model_kwargs = {"temperature": 0, "max_tokens": self.settings.max_tokens,
                             "max_retries": self.settings.max_retries + 1}
-            if self.settings.provider == "google" and self.settings.model.startswith("gemini-2.5"):
+            if self.settings.provider == "google" and self.settings.model.removeprefix('models/').startswith("gemini-2.5"):
                 model_kwargs["reasoning_effort"] = self.settings.reasoning_effort
             self.llm = llm_factory(self.settings.model, provider="openai", client=self.client,
                                    adapter="instructor", **model_kwargs)
@@ -351,6 +418,7 @@ class RagasJudge:
             "context_precision": ContextPrecisionWithReference(llm=self.llm),
             "context_recall": ContextRecall(llm=self.llm),
         }
+        configure_context_precision(self.metrics['context_precision'])
         # Answer relevancy uses local embeddings and does not buy separate embedding API calls.
         if self.embedding_model is not None:
             from ragas.embeddings.base import BaseRagasEmbedding
@@ -376,6 +444,21 @@ class RagasJudge:
             )
 
     async def score(self, name, *, question, response, reference, contexts, image_contexts=()):
+        usage = {'provider_requests': 0, 'provider_cache_hits': 0}
+        tracked = hasattr(self.llm, 'usage')
+        token = _request_usage.set(usage)
+        try:
+            result = await self._score(name, question=question, response=response, reference=reference,
+                                       contexts=contexts, image_contexts=image_contexts)
+            return {**result, **usage} if tracked else result
+        except BaseException as exc:
+            if tracked:
+                exc.judge_request_usage = usage
+            raise
+        finally:
+            _request_usage.reset(token)
+
+    async def _score(self, name, *, question, response, reference, contexts, image_contexts=()):
         if self.llm is None:
             raise RuntimeError("Prepare the judge before scoring.")
         if name == "abstention_accuracy":
@@ -412,3 +495,27 @@ class RagasJudge:
     async def close(self):
         if self.client is not None:
             await self.client.close()
+
+
+def configure_context_precision(metric):
+    """A passage need only support one material part of a multi-part answer."""
+    prompt = metric.prompt
+    prompt.instruction = (
+        'Judge whether this context directly supports ANY material fact in the reference answer '
+        'for the question. Return verdict=1 if it supports at least one answer fact, even when '
+        'other passages are needed for the rest of a multi-part answer. Missing other answer '
+        'facts is NOT a reason for verdict=0. Return 0 for unrelated evidence, a different '
+        'entity, or evidence that contradicts the claimed fact. Do not require this single '
+        'context to contain the complete answer. Give a brief reason and valid JSON.'
+    )
+    examples = [
+        ('What are the invoice total and payment deadline?', 'Invoice A total is 7 USD.',
+         'Invoice A totals 7 USD and payment is due in 30 days.', 1, 'Supports the total; another passage can supply the deadline.'),
+        ('What are the invoice total and payment deadline?', 'Payment for Invoice A is due in 30 days.',
+         'Invoice A totals 7 USD and payment is due in 30 days.', 1, 'Supports the deadline; another passage can supply the total.'),
+        ('What are the invoice total and payment deadline?', 'Invoice B total is 9 USD.',
+         'Invoice A totals 7 USD and payment is due in 30 days.', 0, 'Describes a different invoice and supports neither fact.'),
+    ]
+    prompt.examples = [(prompt.input_model(question=question, context=context, answer=answer),
+                        prompt.output_model(verdict=verdict, reason=reason))
+                       for question, context, answer, verdict, reason in examples]

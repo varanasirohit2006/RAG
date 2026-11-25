@@ -272,8 +272,12 @@ def create_app(root=None, *, warm=True, auth_transport=None):
                     except (ValueError, OSError):
                         continue
         from backend.generation_runtime import DEFAULT_GENERATION_MODEL, model_name_for
+        from backend.evaluation_generation import _model_identity
+        draft_model = os.getenv('SYNTHETIC_GENERATION_MODEL') or model_name_for(os.getenv('SYNTHETIC_GENERATION_PROVIDER') or None)
+        judge_model = os.getenv('EVALUATION_MODEL', DEFAULT_GENERATION_MODEL)
         return {'generation_model': model_name_for(), 'evaluation_model': os.getenv('EVALUATION_MODEL', DEFAULT_GENERATION_MODEL),
-                'independent_reference_verifier': os.getenv('GENERATION_MODEL') != os.getenv('EVALUATION_MODEL'),
+                'independent_reference_verifier': _model_identity(draft_model) != _model_identity(judge_model)
+                    and draft_model not in {'auto', 'auto:fast'} and judge_model not in {'auto', 'auto:fast'},
                 'max_batch_pdfs': MAX_BATCH_PDFS,
                 'max_file_mb': ExtractionSettings.from_env().max_file_mb, 'mode': auth_settings.mode, 'reranker_configured': bool(os.getenv('COHERE_API_KEY')) and os.getenv('RERANKER_PROVIDER', 'cohere') != 'none'}
 
@@ -304,7 +308,9 @@ def create_app(root=None, *, warm=True, auth_transport=None):
             if not path.exists():
                 temporary.replace(path)
             existing = next((d for d in catalog.list('document', owner) if d['sha256'] == sha and not d.get('source_documents')), None)
-            return existing or catalog.put('document', owner, {'name': (file.filename or 'Document.pdf').replace('\\', '/').split('/')[-1][:200], 'sha256': sha, 'size_bytes': size, 'file_path': str(path.relative_to(root)), 'status': 'needs_preparation', 'stats': {}})
+            raw_name = (file.filename or 'Document.pdf').replace('\\', '/').split('/')[-1]
+            safe_name = re.sub(r'[\r\n"\\\x00-\x1f]', '_', raw_name)[:200]
+            return existing or catalog.put('document', owner, {'name': safe_name, 'sha256': sha, 'size_bytes': size, 'file_path': str(path.relative_to(root)), 'status': 'needs_preparation', 'stats': {}})
         finally:
             if temporary and temporary.exists():
                 temporary.unlink()
@@ -351,7 +357,8 @@ def create_app(root=None, *, warm=True, auth_transport=None):
     @app.get('/api/documents/{document_id}/pdf')
     def pdf(request: Request, document_id: str):
         doc = owned(request, 'document', document_id)
-        return FileResponse(root / doc['file_path'], media_type='application/pdf', filename=doc['name'], content_disposition_type='inline')
+        safe_filename = re.sub(r'[\r\n"\\\x00-\x1f]', '_', doc['name'])
+        return FileResponse(root / doc['file_path'], media_type='application/pdf', filename=safe_filename, content_disposition_type='inline')
 
     @app.get('/api/documents/{document_id}/assets/{name}')
     def asset(request: Request, document_id: str, name: str):
@@ -409,7 +416,8 @@ def create_app(root=None, *, warm=True, auth_transport=None):
         doc = owned(request, 'document', document_id)
         content = await file.read(10*1024*1024 + 1)
         await file.close()
-        return save_dataset(request, doc, content, Path(file.filename or '').suffix.lstrip('.').lower(), (file.filename or 'Dataset')[:200])
+        safe_name = re.sub(r'[\r\n"\\\x00-\x1f]', '_', file.filename or 'Dataset')[:200]
+        return save_dataset(request, doc, content, Path(file.filename or '').suffix.lstrip('.').lower(), safe_name)
 
     @app.post('/api/documents/{document_id}/datasets/sample', status_code=201)
     def sample(request: Request, document_id: str):
@@ -439,6 +447,13 @@ def create_app(root=None, *, warm=True, auth_transport=None):
         manifest = {**run['manifest'], 'warnings': list(run['manifest'].get('warnings', [])) + warnings}
         from backend.evaluation_diagnostics import report_diagnostics
         manifest, rows, failures = report_diagnostics(root / run['directory'], manifest, rows)
+        automatic = run.get('automatic') or {}
+        evaluation_seconds = manifest.get('seconds')
+        drafting_seconds = automatic.get('question_generation_seconds', 0)
+        if isinstance(evaluation_seconds, (int, float)) and isinstance(drafting_seconds, (int, float)):
+            manifest = {**manifest, 'evaluation_seconds': evaluation_seconds,
+                        'question_generation_seconds': drafting_seconds,
+                        'total_seconds': evaluation_seconds + drafting_seconds}
         return {k: v for k, v in run.items() if k != 'directory'} | {'manifest': manifest, 'summary': rows, 'metric_failures': failures}
 
     def save_run(owner, document_id, frame, dataset_id=None, automatic=None, *, job_id=None):

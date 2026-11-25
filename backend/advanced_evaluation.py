@@ -54,7 +54,7 @@ METRIC_CATALOG = {
     "factual_correctness": _metric("Factual correctness", "Claim-level F1 of the generated answer against the source reference answer.", method="Ragas judge"),
     "multimodal_faithfulness": _metric("Visual faithfulness", "Answer grounding in the actual text and image evidence; requires a judge with vision support.", method="Ragas multimodal judge", applicability="answerable cases with image evidence"),
     "precision_at_k": _metric("Precision@k", "Relevant unique retrieved chunks divided by the declared retrieval cutoff k. Missing slots count against precision."),
-    "recall_at_k": _metric("Recall@k", "Relevant unique chunks retrieved divided by the source-labelled relevant chunk count."),
+    "recall_at_k": _metric("Recall@k", "Fraction of source-labelled relevant evidence retrieved. With equivalent supporting-passage groups, one matching chunk covers each group; otherwise the denominator is the positive labelled chunk count."),
     "mrr": _metric("MRR", "Reciprocal rank of the first relevant chunk, or zero if none is retrieved."),
     "ndcg_at_k": _metric("nDCG@k", "Discounted graded relevance of the retrieved ranking relative to the ideal source-labelled ranking."),
     "hit_rate_at_k": _metric("Hit rate@k", "One when at least one relevant chunk appears in the first k unique results, otherwise zero."),
@@ -62,7 +62,7 @@ METRIC_CATALOG = {
     "normalized_exact_match": _metric("Exact match", "Exact reference match after Unicode, case and whitespace normalization. This lexical diagnostic does not establish correctness."),
     "token_f1": _metric("Token F1", "Lexical token overlap F1 against the reference; preserves numeric differences and does not measure semantic correctness."),
     "citation_page_validity": _metric("Citation page validity", "Fraction of cited page numbers present in the actual retrieved evidence. Structural validity does not establish claim support."),
-    "citation_page_coverage": _metric("Citation evidence-page coverage", "Fraction of labelled reference pages mentioned in citations. This is evidence-page coverage, not answer-claim coverage.", applicability="answerable cases with source page labels"),
+    "citation_page_coverage": _metric("Citation evidence-page coverage", "Fraction of labelled reference pages mentioned in citations. Equivalent page alternatives count once when supplied. This is evidence-page coverage, not answer-claim coverage.", applicability="answerable cases with source page labels"),
     "citation_source_validity": _metric("Citation source validity", "Fraction of cited source numbers corresponding to actual generator sources. Structural validity does not establish semantic support."),
     "abstention_accuracy": _metric("Correct abstention", "Judge classification of whether an unanswerable response explicitly abstains without inventing an answer.", method="structured judge", applicability="explicitly labelled unanswerable cases"),
     "false_answer_rate": _metric("False-answer rate", "One minus correct abstention, on explicitly labelled unanswerable cases only.", method="derived from abstention judge", direction="lower", applicability="explicitly labelled unanswerable cases"),
@@ -89,26 +89,33 @@ def _rank_diagnostics(retrieved_ids, grades, *, k):
     return {"hit_rate_at_k": float(hits > 0), "map_at_k": precision_sum / min(k, len(relevant))}
 
 
-def _citation_diagnostics(response, documents, reference_pages=()):
+def _citation_diagnostics(response, documents, reference_pages=(), *, reference_page_groups=()):
     supplied_pages = set().union(*(document_pages(document) for document in documents))
     cited_pages = []
     for match in re.finditer(r"\b(?:pages?|pp?\.)\s*[:#]?\s*(\d+(?:\s*(?:,|and|[-–])\s*\d+)*)", response, flags=re.I):
         value = match.group(1)
         # Expand short page ranges, rejecting oversized ranges as invalid endpoints.
         for segment in re.split(r"\s*(?:,|and)\s*", value):
-            endpoints = re.split(r"\s*[-–]\s*", segment)
-            first = int(endpoints[0])
-            if len(endpoints) == 2 and first <= int(endpoints[1]) <= first + 500:
-                cited_pages.extend(range(first, int(endpoints[1]) + 1))
-            else:
-                cited_pages.extend(int(item) for item in endpoints)
+            if not segment.strip():
+                continue
+            endpoints = [part for part in re.split(r"\s*[-–]\s*", segment) if part]
+            if not endpoints:
+                continue
+            try:
+                first = int(endpoints[0])
+                if len(endpoints) == 2 and first <= int(endpoints[1]) <= first + 500:
+                    cited_pages.extend(range(first, int(endpoints[1]) + 1))
+                else:
+                    cited_pages.extend(int(item) for item in endpoints if item.isdigit())
+            except ValueError:
+                continue
     cited_pages = set(cited_pages)
     cited_sources = {int(value) for value in re.findall(r"\bsource\s+(\d+)", response, flags=re.I)}
     values = {}
     if supplied_pages:
         values["citation_page_validity"] = len(cited_pages & supplied_pages) / len(cited_pages) if cited_pages else 0.0
     if reference_pages:
-        values["citation_page_coverage"] = len(cited_pages & set(reference_pages)) / len(set(reference_pages))
+        values["citation_page_coverage"] = sum(bool(cited_pages & supplied_pages & group) for group in reference_page_groups) / len(reference_page_groups) if reference_page_groups else len(cited_pages & supplied_pages & set(reference_pages)) / len(set(reference_pages))
     if documents:
         values["citation_source_validity"] = sum(1 <= rank <= len(documents) for rank in cited_sources) / len(cited_sources) if cited_sources else 0.0
     return values
@@ -142,7 +149,7 @@ def _error(exc):
 
 def _revision():
     root = Path(__file__).resolve().parent
-    files = ("advanced_evaluation.py", "evaluation_data.py", "evaluation_judge.py",
+    files = ("advanced_evaluation.py", "evaluation_data.py", "evaluation_judge.py", 'evaluation_evidence.py', 'provider_preflight.py',
              "rag_pipeline.py", "generation_runtime.py", "retrieval_runtime.py", "index_runtime.py", "files.py")
     return _hash({name: hashlib.sha256((root / name).read_bytes()).hexdigest()
                   for name in files if (root / name).is_file()})
@@ -203,6 +210,22 @@ def summarize_records(records):
     import pandas as pd
 
     metric_names = sorted({name for record in records for name in record.get("metrics", {})})
+    strategies = list(dict.fromkeys(record['strategy'] for record in records))
+    matched_ids = {}
+    for name in metric_names:
+        valid_by_strategy = []
+        for strategy in strategies:
+            valid = set()
+            for record in records:
+                entry = record.get('metrics', {}).get(name, {})
+                if record['strategy'] == strategy and entry.get('status') == 'completed' and record.get('question_id'):
+                    try:
+                        validate_score(name, entry.get('value'))
+                        valid.add(record['question_id'])
+                    except ValueError:
+                        pass
+            valid_by_strategy.append(valid)
+        matched_ids[name] = set.intersection(*valid_by_strategy) if valid_by_strategy else set()
     summary = []
     for strategy in dict.fromkeys(record["strategy"] for record in records):
         rows = [record for record in records if record["strategy"] == strategy]
@@ -225,14 +248,25 @@ def summarize_records(records):
             "partial_rate": sum(record["status"] == "partial" for record in attempted) / len(attempted) if attempted else None,
             "reranked_samples": sum(record.get("retrieval_trace", {}).get("reranker", "none") != "none" for record in rows),
             "degraded_samples": sum(bool(record.get("degraded")) for record in rows),
+            'generation_reused_samples': sum(record.get('generation_mode') in {'cache', 'shared'} or record.get('generation_cache_hit') is True for record in rows),
+            'judge_reused_samples': sum(record.get('judge_reused') is True for record in rows),
         })
         for stage in ("retrieval_seconds", "local_retrieval_seconds", "reranking_seconds", "generation_seconds", "judge_seconds", "sample_seconds"):
             measured = [float(record[stage]) for record in rows if isinstance(record.get(stage), (int, float))
-                        and not isinstance(record[stage], bool) and math.isfinite(record[stage]) and record[stage] >= 0]
+                        and not isinstance(record[stage], bool) and math.isfinite(record[stage]) and record[stage] >= 0
+                        and record.get("status") != "timeout" and not record.get("timeout")]
             row[stage] = statistics.mean(measured) if measured else None
             row[stage + "_count"] = len(measured)
             row[stage + "_p50"] = _percentile(measured, .5)
             row[stage + "_p95"] = _percentile(measured, .95)
+        for stage, mode in [('generation_seconds', 'generation_mode'), ('judge_seconds', 'judge_reused')]:
+            fresh = [float(record[stage]) for record in rows if record.get('status') in ({'completed', 'partial'} if mode == 'generation_mode' else {'completed'})
+                     and ((record.get(mode) == 'fresh') if mode == 'generation_mode' else record.get(mode) is False)
+                     and isinstance(record.get(stage), (int, float)) and not isinstance(record[stage], bool)
+                     and math.isfinite(record[stage]) and record[stage] >= 0]
+            row[stage + '_fresh_count'] = len(fresh)
+            row[stage + '_fresh_p50'] = _percentile(fresh, .5)
+            row[stage + '_fresh_p95'] = _percentile(fresh, .95)
         for name in metric_names:
             entries = [record.get("metrics", {}).get(name, {"status": "not_applicable"}) for record in rows]
             values = []
@@ -252,8 +286,17 @@ def summarize_records(records):
             row[name + "_skipped"] = len(entries) - len(values) - failed
             row[name + "_lower95"] = lower
             row[name + "_upper95"] = upper
+            matched = [validate_score(name, record['metrics'][name]['value']) for record in rows
+                       if record.get('question_id') in matched_ids[name]]
+            lower, upper = _bootstrap_interval(matched)
+            row[name + '_matched'] = statistics.mean(matched) if matched else None
+            row[name + '_matched_count'] = len(matched)
+            row[name + '_matched_lower95'] = lower
+            row[name + '_matched_upper95'] = upper
         summary.append(row)
-    return pd.DataFrame(summary)
+    frame = pd.DataFrame(summary)
+    frame.attrs['matched_question_ids'] = {name: sorted(ids) for name, ids in matched_ids.items()}
+    return frame
 
 
 def _result_attrs(summary, manifest, directory, *, cached=False):
@@ -313,7 +356,7 @@ async def run_evaluation(
         raise ValueError("EVALUATION_CONCURRENCY must be between 1 and 8.")
     from backend.rag_pipeline import get_embedding_model, load_vector_store
     from backend.retrieval_runtime import get_retrievers, retrieve_documents
-    from backend.generation_runtime import generate_final_answer, prepare_generation_context, model_name_for
+    from backend.generation_runtime import generate_final_answer, prepare_generation_context, model_name_for, openai_base_url
 
     emit("Loading the prepared index; no document ingestion is repeated")
     target = Path(db_path or get_db_path()).resolve()
@@ -364,10 +407,18 @@ async def run_evaluation(
         "generation_limits": {name: os.getenv(name) for name in (
             "GENERATION_MAX_CONTEXT_CHARS", "GENERATION_MAX_IMAGES", "GENERATION_MAX_OUTPUT_TOKENS",
             "MODEL_TIMEOUT_SECONDS", "GENERATION_IMAGE_MAX_DIM", "GENERATION_THINKING_BUDGET",
-            "GENERATION_MAX_RETRIES", "GENERATION_RETRY_DELAY_SECONDS",
+            "GENERATION_MAX_RETRIES", "GENERATION_RETRY_DELAY_SECONDS", 'GENERATION_REQUEST_TIMEOUT_SECONDS',
         )},
         "reranker": _reranker_configuration(strategies),
+        'provider_preflight': os.getenv('EVALUATION_PROVIDER_PREFLIGHT', 'false').lower() == 'true',
     }
+    if judge_settings:
+        from backend.evaluation_judge import JUDGE_RUBRIC_VERSION
+        config['judge_rubric_version'] = JUDGE_RUBRIC_VERSION
+    if profile != "retrieval" and generator_provider == "openai":
+        config["generator_base_url"] = openai_base_url()
+    if judge_settings and judge_settings.provider == "openai":
+        config["judge_base_url"] = openai_base_url()
     run_key = _hash(config)
     directory = Path(output_dir).resolve() / run_key
     manifest_path = directory / "manifest.json"
@@ -407,12 +458,19 @@ async def run_evaluation(
         manifest["warnings"].append("Reranking is disabled; its requested strategy uses Hybrid evidence. No reranker quality comparison was performed.")
     if judge_settings and generator_provider == judge_settings.provider and generator_model == judge_settings.model:
         manifest["warnings"].append("Generator and judge use the same model; an independent judge model is recommended.")
+    if profile != "retrieval" and ((generator_provider == "openai" and generator_model in {"auto", "auto:fast"}) or (judge_settings and judge_settings.provider == "openai" and judge_settings.model in {"auto", "auto:fast"})):
+        manifest["warnings"].append("Automatic model routing can change the underlying model between requests; use a fixed model ID for repeatable comparisons.")
     if any(case.reference_pages and not (case.relevant_chunk_ids or case.relevance_grades) for case in cases):
         manifest["warnings"].append("Some retrieval labels are page-level; all chunks on those pages count as relevant. Review finer chunk labels for precision claims.")
+    if profile != 'retrieval' and len(selected) < 10:
+        manifest['warnings'].append(f'Only {len(selected)} unique questions were evaluated. These scores are exploratory and do not establish a strategy winner.')
+    manifest['comparison_method'] = 'Matched means use only the same questions successfully scored for that metric in every selected strategy.'
+    manifest['retrieval_label_method'] = 'Precision and ranking use labelled chunks; recall accepts one hit from each equivalent supporting-passage group when groups are present.'
     cache_directory = Path(output_dir).resolve() / "cache"
     records = []
     judge = None
     shared_answers = {}
+    answer_metadata = {}
     shared_metrics = {}
     sample_semaphore = asyncio.Semaphore(concurrency)
     call_semaphore = asyncio.Semaphore(concurrency)
@@ -420,7 +478,7 @@ async def run_evaluation(
     work_counts = {"generation_operations": 0, "judge_metric_operations": 0}
     provider_limit = None
 
-    async def answer_for(case, docs, context):
+    async def answer_for(case, docs, context, record):
         nonlocal cache_hits
         identity = {
             "revision": config["implementation_revision"], "index_path": str(target),
@@ -430,13 +488,18 @@ async def run_evaluation(
             "images": [_hash(payload) for payload in context.get("images_base64", [])],
             "limits": config["generation_limits"],
         }
+        if generator_provider == "openai":
+            identity["base_url"] = config["generator_base_url"]
         answer_key = _hash(identity)
         path = cache_directory / "answers" / (answer_key + ".json")
         cached = read_json(path) if not force else None
         if cached and isinstance(cached.get("answer"), str) and cached["answer"].strip():
             cache_hits += 1
+            record['generation_mode'] = 'cache'
+            record['generation_model_metadata'] = cached.get('model_metadata', {})
             return cached["answer"], True
         if answer_key not in shared_answers:
+            record['generation_mode'] = 'fresh'
             async def generate():
                 async with call_semaphore:
                     if cancelled():
@@ -445,20 +508,30 @@ async def run_evaluation(
                         generator_provider == 'openrouter' or generator_model == provider_limit.get('model')):
                         raise JudgeQuotaExceeded(provider_limit)
                     work_counts["generation_operations"] += 1
+                    metadata = {}
                     answer = await asyncio.to_thread(
                         generate_final_answer, docs, case.question,
-                        provider=generator_provider, model_name=generator_model,
+                        provider=generator_provider, model_name=generator_model, metadata_callback=metadata.update,
                     )
                 if not isinstance(answer, str) or not answer.strip() or answer == "Error generating answer.":
                     raise RuntimeError("Generator did not return a usable answer; failures cannot be scored as responses.")
-                write_json(path, {"answer": answer, "created_at": _utc(), "provider": generator_provider, "model": generator_model})
+                answer_metadata[answer_key] = metadata
+                write_json(path, {"answer": answer, "created_at": _utc(), "provider": generator_provider, "model": generator_model, 'model_metadata': metadata})
                 return answer
             shared_answers[answer_key] = asyncio.create_task(generate())
             reused = False
         else:
+            record['generation_mode'] = 'shared'
             reused = True
             cache_hits += 1
-        answer = await asyncio.shield(shared_answers[answer_key])
+        task = shared_answers[answer_key]
+        try:
+            answer = await asyncio.shield(task)
+        except BaseException:
+            if shared_answers.get(answer_key) is task:
+                shared_answers.pop(answer_key, None)
+            raise
+        record['generation_model_metadata'] = answer_metadata.get(answer_key, {})
         return answer, reused
 
     async def metric_for(name, case, response, context, image_paths):
@@ -470,6 +543,8 @@ async def run_evaluation(
             "response": response, "reference": case.reference_answer,
             "texts": context["text_contexts"], "images": [_hash(payload) for payload in context.get("images_base64", [])],
         }
+        if judge_settings.provider == "openai":
+            identity["base_url"] = config["judge_base_url"]
         key = _hash(identity)
         path = cache_directory / "metrics" / (key + ".json")
         cached = read_json(path) if not force else None
@@ -477,7 +552,8 @@ async def run_evaluation(
             try:
                 value = validate_score(name, cached["value"])
                 cache_hits += 1
-                return {"status": "completed", "value": value, "reason": cached.get("reason"), "cache_hit": True}
+                return {"status": "completed", "value": value, "reason": cached.get("reason"), "cache_hit": True,
+                        'provider_requests': 0, 'provider_cache_hits': 0}
             except (KeyError, ValueError):
                 pass
         if key not in shared_metrics:
@@ -495,18 +571,22 @@ async def run_evaluation(
                                 name, question=case.question, response=response, reference=case.reference_answer,
                                 contexts=context["text_contexts"], image_contexts=image_paths)
                     except TimeoutError as exc:
-                        explanation = f'{name} exceeded its {metric_timeout}-second complete-metric deadline' if budget.expired() else f'A provider request timed out during {name} (request limit: {judge_settings.timeout} seconds)'
-                        raise TimeoutError(explanation + '; completed judging steps are retained for retry.') from exc
+                        explanation = f'{name} exceeded its {metric_timeout}-second complete-metric deadline' if budget.expired() else f'A provider request timed out during {name} (transport limit: {judge_settings.transport_timeout} seconds; step budget: {judge_settings.timeout} seconds)'
+                        error = TimeoutError(explanation + '; completed judging steps are retained for retry.')
+                        error.judge_request_usage = getattr(exc, 'judge_request_usage', {})
+                        raise error from exc
                 value = validate_score(name, result["value"])
                 write_json(path, {"value": value, "reason": result.get("reason"), "created_at": _utc()})
-                return {"status": "completed", "value": value, "reason": result.get("reason"), "cache_hit": False}
+                return {"status": "completed", "value": value, "reason": result.get("reason"), "cache_hit": False,
+                        **{name: result[name] for name in ('provider_requests', 'provider_cache_hits') if name in result}}
             shared_metrics[key] = asyncio.create_task(evaluate())
             reused = False
         else:
             cache_hits += 1
             reused = True
         result = await asyncio.shield(shared_metrics[key])
-        return {**result, "cache_hit": reused}
+        return {**result, "cache_hit": reused,
+                **({'provider_requests': 0, 'provider_cache_hits': 0} if reused else {})}
 
     async def process(case, strategy):
         nonlocal done, provider_limit
@@ -587,7 +667,7 @@ async def run_evaluation(
                 emit(f"{strategy} / {case.id}: generating an answer from the production evidence")
                 stage = time.perf_counter()
                 try:
-                    response, reused = await answer_for(case, docs, context)
+                    response, reused = await answer_for(case, docs, context, record)
                 finally:
                     record["generation_seconds"] = round(time.perf_counter() - stage, 4)
                 record["generation_cache_hit"] = reused
@@ -602,7 +682,9 @@ async def run_evaluation(
                     # be checked against the evidence actually supplied to generation.
                     supplied_ids = set(context["chunk_ids"])
                     supplied_documents = [document for document in docs if document_id(document) in supplied_ids]
-                    for name, value in _citation_diagnostics(response, supplied_documents, reference_pages).items():
+                    page_groups = [set().union(*(document_pages(document) for document in all_docs if document_id(document) in group))
+                                   for group in case.relevant_chunk_groups]
+                    for name, value in _citation_diagnostics(response, supplied_documents, reference_pages, reference_page_groups=page_groups).items():
                         record["metrics"][name] = {"status": "completed", "value": validate_score(name, value)}
                 names = list(PROFILE_METRICS[profile]) if case.answerable else ["abstention_accuracy"]
                 if context.get("images_base64") and case.answerable:
@@ -631,12 +713,15 @@ async def run_evaluation(
                             result = {"status": "skipped" if isinstance(exc, JudgeQuotaExceeded) else "failed",
                                       "error": provider_limit['reason'], "reason": provider_limit['reason'], "provider_status_code": 429}
                         else:
-                            result = {"status": "failed", "error": _error(exc)}
+                            result = {"status": "failed", "error": _error(exc), **getattr(exc, 'judge_request_usage', {})}
                     record["metrics"][name] = result
                 try:
                     await asyncio.gather(*(score_one(name) for name in names))
                 finally:
                     record["judge_seconds"] = round(time.perf_counter() - stage, 4)
+                entries = [record['metrics'][name] for name in names]
+                record['judge_reused'] = any(entry.get('cache_hit') or entry.get('provider_cache_hits', 0) for entry in entries)
+                record['judge_provider_requests'] = sum(entry.get('provider_requests', 0) for entry in entries)
                 if not case.answerable:
                     abstention = record["metrics"].get("abstention_accuracy", {})
                     record["metrics"]["false_answer_rate"] = {
@@ -680,6 +765,8 @@ async def run_evaluation(
     try:
         write_json(manifest_path, manifest)
         if profile != "retrieval":
+            from backend.provider_preflight import check_configured_models
+            manifest['model_preflight'] = await check_configured_models([(generator_provider, generator_model), (judge_settings.provider, judge_settings.model)])
             emit("Preparing the configured evaluation judge; completed answers and scores will be reused")
             judge = RagasJudge(judge_settings, embedding_model=get_embedding_model())
             judge.prepare()
@@ -700,6 +787,8 @@ async def run_evaluation(
             "status": status, "finished_at": _utc(), "seconds": round(time.perf_counter() - started, 3),
             "failed_samples": failed, "skipped_samples": skipped, "cache_hits": cache_hits,
             "completed_samples": sum(record["status"] == "completed" for record in records),
+            'partial_samples': sum(record['status'] == 'partial' for record in records),
+            'answer_failed_samples': sum(record['status'] == 'failed' and not record.get('response') for record in records),
             "work_counts": work_counts,
         })
         if judge is not None and hasattr(getattr(judge, "llm", None), "usage"):
@@ -708,6 +797,7 @@ async def run_evaluation(
             manifest["provider_limit"] = provider_limit
             manifest["warnings"].append(provider_limit['reason'])
         summary = summarize_records(records)
+        manifest['matched_question_ids'] = summary.attrs['matched_question_ids']
         summary.to_csv(directory / "summary.csv", index=False)
         write_json(manifest_path, manifest)
         emit(f"Evaluation {status}: {len(records)} samples, {failed} failed/partial, {skipped} cancelled/skipped")

@@ -11,7 +11,10 @@ export const labels: Record<string, string> = {
   precision_at_k: 'Precision@k', recall_at_k: 'Recall@k', mrr: 'MRR', ndcg_at_k: 'nDCG@k', hit_rate_at_k: 'Hit rate@k', map_at_k: 'MAP@k',
   citation_page_validity: 'Citation page validity', citation_page_coverage: 'Citation page coverage', citation_source_validity: 'Citation source validity', normalized_exact_match: 'Exact match', token_f1: 'Token F1',
   multimodal_faithfulness: 'Visual faithfulness', abstention_accuracy: 'Abstention accuracy', false_answer_rate: 'False answer rate',
-  samples: 'Samples', completed: 'Completed', failed: 'Failed', skipped: 'Skipped', failure_rate: 'Failure rate', partial_rate: 'Partial rate', error_rate: 'Error rate',
+  samples: 'Samples', completed: 'Completed', failed: 'Failed / partial', skipped: 'Skipped', failure_rate: 'Failure rate', partial_rate: 'Partial rate', error_rate: 'Error rate',
+  generation_seconds_fresh_count: 'Fresh answers', generation_seconds_fresh_p50: 'Fresh answer p50 (s)', generation_seconds_fresh_p95: 'Fresh answer p95 (s)',
+  judge_seconds_fresh_count: 'Fresh judging stages', judge_seconds_fresh_p50: 'Fresh judging p50 (s)', judge_seconds_fresh_p95: 'Fresh judging p95 (s)',
+  generation_reused_samples: 'Reused answers', judge_reused_samples: 'Reused judging',
   sample_seconds_p50: 'Total p50 (s)', sample_seconds_p95: 'Total p95 (s)', retrieval_seconds_p50: 'Retrieval p50 (s)', retrieval_seconds_p95: 'Retrieval p95 (s)',
   generation_seconds_p50: 'Answer p50 (s)', generation_seconds_p95: 'Answer p95 (s)', judge_seconds_p50: 'Judge p50 (s)', judge_seconds_p95: 'Judge p95 (s)',
 }

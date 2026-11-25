@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
-from backend.provider_limits import provider_status_code
+from backend.provider_limits import provider_status_code, provider_timeout
 
 DEFAULT_GENERATION_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_OPENROUTER_GENERATION_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
@@ -32,8 +32,8 @@ class GenerationError(RuntimeError):
 
 def resolve_provider(provider=None):
     value = (provider or os.getenv("GENERATION_PROVIDER", "google")).strip().lower()
-    if value not in {"google", "openrouter", "ollama", "extractive"}:
-        raise ValueError("GENERATION_PROVIDER must be google, openrouter, ollama, or extractive.")
+    if value not in {"google", "openai", "openrouter", "ollama", "extractive"}:
+        raise ValueError("GENERATION_PROVIDER must be google, openai, openrouter, ollama, or extractive.")
     return value
 
 
@@ -52,7 +52,34 @@ def model_name_for(provider=None, model_name=None):
         return os.getenv("LOCAL_GENERATION_MODEL", "gemma3:4b")
     if provider == "openrouter":
         return os.getenv("GENERATION_MODEL", DEFAULT_OPENROUTER_GENERATION_MODEL)
+    if provider == "openai":
+        model = os.getenv("GENERATION_MODEL", "").strip()
+        if not model:
+            raise ValueError("GENERATION_MODEL is required for OpenAI-compatible generation.")
+        return model
     return os.getenv("GENERATION_MODEL", DEFAULT_GENERATION_MODEL)
+
+
+def openai_base_url():
+    return (os.getenv("OPENAI_BASE_URL", "").strip() or "https://api.openai.com/v1").rstrip("/")
+
+
+def create_openai_generation_model(model_name, timeout, max_tokens, *, asynchronous=False, base_url=None):
+    """Use the configured OpenAI-compatible endpoint, including local proxies."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY is required for OpenAI-compatible model requests.")
+    from langchain_openai import ChatOpenAI
+
+    kwargs = {
+        "model": model_name, "api_key": api_key, "base_url": base_url or openai_base_url(),
+        "temperature": 0, "timeout": timeout, "max_retries": 0, "max_tokens": max_tokens,
+        "use_responses_api": False,
+    }
+    if asynchronous:
+        import httpx
+        kwargs["http_async_client"] = httpx.AsyncClient(timeout=timeout)
+    return ChatOpenAI(**kwargs)
 
 
 def create_openrouter_generation_model(model_name, timeout, max_tokens, *, asynchronous=False):
@@ -118,6 +145,8 @@ def ollama_json_schema(response_model):
 
 @lru_cache(maxsize=8)
 def _build_model(provider, model_name, timeout, max_output_tokens, thinking_budget, base_url):
+    if provider == "openai":
+        return create_openai_generation_model(model_name, timeout, max_output_tokens, base_url=base_url)
     if provider == "openrouter":
         return create_openrouter_generation_model(model_name, timeout, max_output_tokens)
     if provider == "google":
@@ -136,7 +165,7 @@ def _build_model(provider, model_name, timeout, max_output_tokens, thinking_budg
                 kwargs["temperature"] = None
             kwargs["reasoning_effort"] = "minimal"
             kwargs["include_thoughts"] = False
-        if model_name.startswith("gemini-2.5-flash") and "thinking_budget" in ChatGoogleGenerativeAI.model_fields:
+        if normalized_model.startswith("gemini-2.5-flash") and "thinking_budget" in ChatGoogleGenerativeAI.model_fields:
             kwargs["thinking_budget"] = thinking_budget
         return ChatGoogleGenerativeAI(**kwargs)
     if provider == "ollama":
@@ -154,16 +183,17 @@ def get_generation_model(model_name=None, *, provider=None, timeout_seconds=None
     provider = resolve_provider(provider)
     if provider == "extractive":
         raise ValueError("Extractive evidence does not use a generation model.")
-    timeout = _positive_int("MODEL_TIMEOUT_SECONDS", 60, 300)
+    limit = _positive_int("MODEL_TIMEOUT_SECONDS", 60, 300)
+    timeout = _positive_int("GENERATION_REQUEST_TIMEOUT_SECONDS", limit, limit)
     if timeout_seconds is not None:
-        if not 0 < timeout_seconds <= timeout:
+        if not 0 < timeout_seconds <= limit:
             raise ValueError("Retry timeout must fit within MODEL_TIMEOUT_SECONDS.")
-        timeout = timeout_seconds
+        timeout = min(timeout, timeout_seconds)
     max_output_tokens = _positive_int("GENERATION_MAX_OUTPUT_TOKENS", 1024, 8192)
     thinking_budget = int(os.getenv("GENERATION_THINKING_BUDGET", "0"))
     return _build_model(
         provider, model_name_for(provider, model_name), timeout, max_output_tokens,
-        thinking_budget, os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        thinking_budget, openai_base_url() if provider == "openai" else os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
     )
 
 
@@ -340,7 +370,7 @@ def _extractive_answer(chunks, query):
 
 
 def generate_final_answer(chunks, query, *, provider=None, model_name=None,
-                          progress_callback=None, token_callback=None):
+                          progress_callback=None, token_callback=None, metadata_callback=None):
     provider = resolve_provider(provider)
     if provider == "extractive":
         answer = _extractive_answer(chunks, query)
@@ -371,6 +401,8 @@ def generate_final_answer(chunks, query, *, provider=None, model_name=None,
                     raise GenerationError(f"Generation exceeded the {limit}-second deadline.")
                 model = get_generation_model(model_name, provider=provider, timeout_seconds=remaining)
             finish_reason = ""
+            chunk = None
+            response = None
             try:
                 if provider == 'openrouter':
                     from backend.provider_limits import ensure_openrouter_available
@@ -401,11 +433,12 @@ def generate_final_answer(chunks, query, *, provider=None, model_name=None,
             except Exception as exc:
                 code = provider_status_code(exc)
                 delay = retry_delay * 2 ** attempt
-                if (parts or code not in {500, 502, 503, 504} or attempt == max_retries
+                if (parts or (code not in {500, 502, 503, 504} and not provider_timeout(exc)) or attempt == max_retries
                         or deadline - time.perf_counter() <= delay):
                     raise
                 if progress_callback:
-                    progress_callback(0, 1, f"Retrying {model_name_for(provider, model_name)} answer after HTTP {code} ({attempt + 1}/{max_retries})")
+                    cause = f"HTTP {code}" if code else "a provider timeout"
+                    progress_callback(0, 1, f"Retrying {model_name_for(provider, model_name)} answer after {cause} ({attempt + 1}/{max_retries})")
                 time.sleep(delay)
     except GenerationError:
         raise
@@ -428,6 +461,12 @@ def generate_final_answer(chunks, query, *, provider=None, model_name=None,
         )
     if not answer.strip():
         raise GenerationError("The generation provider returned no answer text.")
+    if metadata_callback:
+        final_message = chunk if token_callback else response
+        metadata = getattr(final_message, "response_metadata", None) or {}
+        metadata_callback({"requested_model": model_name_for(provider, model_name),
+                           "resolved_model": metadata.get("model_name") or metadata.get("model"),
+                           "usage": getattr(final_message, "usage_metadata", None) or {}})
     if progress_callback:
         progress_callback(1, 1, "Answer complete.")
     return answer

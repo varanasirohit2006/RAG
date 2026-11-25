@@ -24,6 +24,20 @@ def provider_status_code(exc):
     return None
 
 
+def provider_timeout(exc):
+    """Recognize transport timeouts through bounded exception chains."""
+    import httpx
+    from openai import APITimeoutError
+
+    seen = set()
+    while exc is not None and id(exc) not in seen and len(seen) < 8:
+        seen.add(id(exc))
+        if isinstance(exc, (TimeoutError, httpx.TimeoutException, APITimeoutError)):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def cache_root():
     return Path(os.getenv('RAG_EVALUATION_CACHE_DIR', str(PROJECT_ROOT / 'evaluation_runs' / 'cache')))
 
