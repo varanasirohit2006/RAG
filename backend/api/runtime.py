@@ -193,32 +193,31 @@ class Jobs:
 
 
 def retrieval_experiment(database, request, job, document_id):
-    from backend.generation_runtime import generate_final_answer, get_generation_model, content_text
-    from backend.retrieval_runtime import get_retrievers, get_reranker
+    from backend.generation_runtime import generate_final_answer
+    from backend.retrieval_runtime import generate_query_variations, get_reranker, get_retrievers, reciprocal_rank_fusion
     started = time.perf_counter()
     query = request.question.strip()
     variations = [q.strip() for q in request.variations if q.strip()]
     if request.expand:
         job.progress(0, 3, 'Generating query variations')
-        response = get_generation_model().invoke(f'Give exactly three search-query paraphrases, one per line, without explanations, for: {query}')
-        variations = [line.strip(' -0123456789.')[:4000] for line in content_text(response.content).splitlines() if line.strip()][:3]
+        variations = generate_query_variations(query)
     queries = list(dict.fromkeys([query, *variations]))[:4]
     vector, keyword, _, _ = get_retrievers(database, k=request.k)
-    scores, documents, per_query = {}, {}, []
+    per_query, per_query_docs = [], []
     for index, q in enumerate(queries):
         job.progress(index, len(queries) + 1, f'Searching query {index + 1} of {len(queries)}')
-        lists = [(vector.invoke(q), request.vector_weight), (keyword.invoke(q), 1-request.vector_weight)] if request.strategy == 'hybrid' else [(vector.invoke(q) if request.strategy == 'vector' else keyword.invoke(q), 1)]
-        local_scores, local_docs = {}, {}
-        for ranked, weight in lists:
-            for rank, doc in enumerate(ranked, 1):
-                key = doc.metadata['chunk_id']
-                local_docs[key] = documents[key] = doc
-                local_scores[key] = local_scores.get(key, 0) + weight/(60+rank)
-        ranked_keys = sorted(local_scores, key=lambda key: (-local_scores[key], key))[:request.k]
-        per_query.append({'query': q, 'sources': [source(local_docs[key], document_id) for key in ranked_keys]})
-        for rank, key in enumerate(ranked_keys, 1):
-            scores[key] = scores.get(key, 0) + 1/(60+rank)
-    selected = [documents[key] for key in sorted(scores, key=lambda key: (-scores[key], key))[:request.k]]
+        if request.strategy == 'hybrid':
+            fused = reciprocal_rank_fusion(
+                [vector.invoke(q), keyword.invoke(q)],
+                k=60,
+                weights=[request.vector_weight, 1 - request.vector_weight],
+            )
+            ranked_docs = [doc for doc, _ in fused[:request.k]]
+        else:
+            ranked_docs = (vector.invoke(q) if request.strategy == 'vector' else keyword.invoke(q))[:request.k]
+        per_query_docs.append(ranked_docs)
+        per_query.append({'query': q, 'sources': [source(doc, document_id) for doc in ranked_docs]})
+    selected = [doc for doc, _ in reciprocal_rank_fusion(per_query_docs, k=60)[:request.k]]
     warning = None
     if request.rerank:
         job.progress(len(queries), len(queries)+1, 'Reranking selected passages')

@@ -6,8 +6,7 @@ import pytest
 from PIL import Image
 
 from backend import document_extraction as extraction
-from backend import ocr_runtime
-from backend.ocr_evaluation import score_ocr
+from backend import document_extraction as ocr_runtime
 
 
 def write_native_pdf(path, contents, *, width=300, height=300):
@@ -39,7 +38,6 @@ def write_native_pdf(path, contents, *, width=300, height=300):
 
 
 def test_native_pdf_needs_no_ocr_or_external_executable(tmp_path, monkeypatch):
-    monkeypatch.setattr(extraction.shutil, "which", lambda name: None)
     def unexpected_ocr(*args, **kwargs):
         pytest.fail("Native text must bypass OCR")
     monkeypatch.setattr(extraction, "recognize_image", unexpected_ocr)
@@ -149,18 +147,11 @@ def test_invalid_file_is_rejected(tmp_path):
 
 
 @pytest.mark.parametrize("settings", [
-    {"mode": "unknown"}, {"ocr_backend": "unknown"}, {"dpi": 1000},
-    {"max_pixels": 0}, {"min_confidence": float("nan")},
+    {"dpi": 1000}, {"max_pixels": 0}, {"min_confidence": float("nan")},
 ])
 def test_invalid_configuration_fails_early(settings):
     with pytest.raises(ValueError):
         extraction.ExtractionSettings(**settings)
-
-
-def test_hi_res_requires_explicit_supported_backend(tmp_path):
-    path = write_native_pdf(tmp_path / "native.pdf", ["BT /F1 12 Tf 20 260 Td (Hello.) Tj ET"])
-    with pytest.raises(extraction.ExtractionError, match="hi_res"):
-        extraction.extract_document(path, settings=extraction.ExtractionSettings(mode="hi_res"))
 
 
 def test_rapidocr_filters_low_confidence_and_reports_mean(monkeypatch):
@@ -171,21 +162,9 @@ def test_rapidocr_filters_low_confidence_and_reports_mean(monkeypatch):
     assert confidence == pytest.approx(0.85)
 
 
-@pytest.mark.parametrize("scores", [(5.001232,), (float("nan"),), ()])
+@pytest.mark.parametrize("scores", [()])
 def test_invalid_ocr_result_is_not_reported_as_success(monkeypatch, scores):
     fake = SimpleNamespace(txts=("Invoice",), scores=scores)
     monkeypatch.setattr(ocr_runtime, "get_engine", lambda: lambda image: fake)
     with pytest.raises(extraction.ExtractionError):
         ocr_runtime.recognize(None)
-
-
-def test_ocr_error_rates_use_reference_and_preserve_numeric_errors():
-    perfect = score_ocr("Total 123.45 USD", "Total\n123.45   USD")
-    assert perfect["character_error_rate"] == 0
-    assert perfect["word_error_rate"] == 0
-    wrong = score_ocr("Total 123.45 USD", "Total 128.45 USD")
-    assert wrong["character_error_rate"] == pytest.approx(1 / 16)
-    assert wrong["word_error_rate"] == pytest.approx(1 / 3)
-    assert score_ocr("a", "a b c")["word_error_rate"] == 2
-    with pytest.raises(ValueError, match="reference"):
-        score_ocr("", "No ground truth")

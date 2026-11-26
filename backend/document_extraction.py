@@ -1,13 +1,15 @@
-"""Native PDF extraction with local OCR; no Poppler or Tesseract required by default."""
+"""Native PDF text/table extraction with bundled local RapidOCR and multi-PDF batching."""
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
+import json
 import logging
 import math
 import os
-import shutil
+import tempfile
 import threading
 from dataclasses import dataclass
 from html import escape
@@ -15,6 +17,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 _pdfium_lock = threading.Lock()
+_engine_lock = threading.Lock()
+MAX_BATCH_PDFS = 3
 
 
 class ExtractionError(RuntimeError):
@@ -23,8 +27,6 @@ class ExtractionError(RuntimeError):
 
 @dataclass(frozen=True)
 class ExtractionSettings:
-    mode: str = "auto"
-    ocr_backend: str = "rapidocr"
     dpi: int = 200
     max_pixels: int = 12_000_000
     max_pages: int = 300
@@ -32,10 +34,6 @@ class ExtractionSettings:
     min_confidence: float = 0.5
 
     def __post_init__(self):
-        if self.mode not in {"auto", "hi_res"}:
-            raise ValueError("PDF_EXTRACTION_MODE must be auto or hi_res.")
-        if self.ocr_backend not in {"rapidocr", "tesseract"}:
-            raise ValueError("OCR_BACKEND must be rapidocr or tesseract.")
         if not 72 <= self.dpi <= 400:
             raise ValueError("OCR_DPI must be between 72 and 400.")
         if min(self.max_pixels, self.max_pages, self.max_file_mb) <= 0:
@@ -44,10 +42,8 @@ class ExtractionSettings:
             raise ValueError("OCR_MIN_CONFIDENCE must be between 0 and 1.")
 
     @classmethod
-    def from_env(cls, *, mode=None, ocr_backend=None):
+    def from_env(cls, **_kwargs):
         return cls(
-            mode=mode or os.getenv("PDF_EXTRACTION_MODE", "auto"),
-            ocr_backend=ocr_backend or os.getenv("OCR_BACKEND", "rapidocr"),
             dpi=int(os.getenv("OCR_DPI", "200")),
             max_pixels=int(os.getenv("OCR_MAX_PIXELS", "12000000")),
             max_pages=int(os.getenv("PDF_MAX_PAGES", "300")),
@@ -56,57 +52,56 @@ class ExtractionSettings:
         )
 
 
-def configure_tesseract() -> str:
-    """Discover an optional installation without changing PATH or installing tools."""
-    configured = os.getenv("TESSERACT_CMD")
-    candidates = [configured] if configured else [
-        shutil.which("tesseract"),
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-    ]
-    command = next((str(p) for p in candidates if p and Path(p).is_file()), None)
-    if not command:
-        raise ExtractionError(
-            "Tesseract was not found. Use OCR_BACKEND=rapidocr (the default), "
-            "or set TESSERACT_CMD to your installed tesseract executable."
-        )
-    import pytesseract
-
-    pytesseract.pytesseract.tesseract_cmd = command
+def get_engine():
     try:
-        languages = pytesseract.get_languages(config="")
-    except Exception as exc:
-        raise ExtractionError("Tesseract could not load its language data.") from exc
-    if "eng" not in languages:
-        raise ExtractionError("Tesseract is missing English (eng) trained data.")
-    # Unstructured uses a separate wrapper in its optional high-resolution mode.
-    try:
-        import unstructured_pytesseract
+        import rapidocr
+    except ImportError as exc:
+        raise ExtractionError("RapidOCR is missing. Run: python -m pip install -r requirements.txt") from exc
+    model_dir = Path(rapidocr.__file__).resolve().parent / "models"
+    models = {
+        "Det.model_path": model_dir / "PP-OCRv6_det_small.onnx",
+        "Rec.model_path": model_dir / "PP-OCRv6_rec_small.onnx",
+        "Cls.model_path": model_dir / "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    }
+    if any(not path.is_file() for path in models.values()):
+        raise ExtractionError("RapidOCR bundled models are missing. Reinstall rapidocr==3.10.0.")
+    threads = int(os.getenv("OCR_THREADS", "2"))
+    return rapidocr.RapidOCR(params={
+        **{key: str(path) for key, path in models.items()},
+        "Det.lang_type": "en",
+        "Rec.lang_type": "en",
+        "Global.text_score": 0.0,
+        "Global.log_level": "warning",
+        "EngineConfig.onnxruntime.intra_op_num_threads": threads,
+        "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+    })
 
-        unstructured_pytesseract.pytesseract.tesseract_cmd = command
-    except ImportError:
-        pass
-    return command
+
+def recognize(image, *, min_confidence: float = 0.5) -> tuple[str, float | None]:
+    if not 0 <= min_confidence <= 1:
+        raise ValueError("Minimum OCR confidence must be between 0 and 1.")
+    with _engine_lock:
+        try:
+            result = get_engine()(image)
+        except ExtractionError:
+            raise
+        except Exception as exc:
+            raise ExtractionError(f"RapidOCR could not read this image: {exc}") from exc
+    texts = result.txts if result.txts is not None else ()
+    scores = result.scores if result.scores is not None else ()
+    if len(texts) != len(scores):
+        raise ExtractionError("RapidOCR returned inconsistent text/confidence counts.")
+    accepted = [(t.strip(), float(s)) for t, s in zip(texts, scores) if t.strip() and 0 <= float(s) <= 1 and float(s) >= min_confidence]
+    if not accepted:
+        return "", None
+    return "\n".join(text for text, _ in accepted), sum(s for _, s in accepted) / len(accepted)
 
 
 def recognize_image(image, settings: ExtractionSettings) -> tuple[str, float | None]:
-    """Return OCR text and mean accepted-line confidence; confidence is not accuracy."""
-    if settings.ocr_backend == "tesseract":
-        configure_tesseract()
-        import pytesseract
-
-        try:
-            return pytesseract.image_to_string(image, lang="eng", timeout=60).strip(), None
-        except Exception as exc:
-            raise ExtractionError("Tesseract OCR failed for this page.") from exc
-
-    from backend.ocr_runtime import recognize
-
     return recognize(image, min_confidence=settings.min_confidence)
 
 
 def _render_page(pdf, page_index: int, settings: ExtractionSettings):
-    """Render with PDFium, bounding allocation before creating a bitmap."""
     page = pdf[page_index]
     try:
         width, height = page.get_size()
@@ -115,7 +110,6 @@ def _render_page(pdf, page_index: int, settings: ExtractionSettings):
         scale = min(settings.dpi / 72, math.sqrt(settings.max_pixels / (width * height)))
         bitmap = page.render(scale=scale)
         try:
-            # PIL must own its pixels before PDFium releases the backing buffer.
             return bitmap.to_pil().convert("RGB").copy()
         finally:
             bitmap.close()
@@ -140,70 +134,49 @@ def _page_elements(page, pdf, index: int, filename: str, settings: ExtractionSet
     from unstructured.documents.elements import ElementMetadata, Image, NarrativeText, Table
 
     number = index + 1
-
-    def metadata(**kwargs):
-        return ElementMetadata(filename=filename, page_number=number, languages=["eng"], **kwargs)
-
+    meta = lambda **kw: ElementMetadata(filename=filename, page_number=number, languages=["eng"], **kw)
     text = (page.extract_text(layout=False) or "").strip()
-    # Short native covers remain native; scan pages with a small text overlay use OCR.
-    is_scan = bool(page.images) and len("".join(text.split())) < 80
-    if is_scan:
+
+    # Run RapidOCR on scanned pages (pages with embedded images and < 80 non-space chars).
+    if bool(page.images) and len("".join(text.split())) < 80:
         image = _render_page(pdf, index, settings)
         try:
             ocr_text, confidence = recognize_image(image, settings)
             if not ocr_text:
-                # Retain the visual page and flag the result; blank/photo pages may be intentional.
                 logger.warning("No OCR text detected on page %s; visual evidence retained.", number)
             elements = []
             if ocr_text or text:
-                elements.append(NarrativeText(
-                    text=ocr_text or text,
-                    metadata=metadata(detection_class_prob=confidence),
-                    detection_origin=settings.ocr_backend,
-                ))
-            elements.append(Image(
-                text="",
-                metadata=metadata(image_base64=_image_payload(image), image_mime_type="image/jpeg"),
-                detection_origin="pdfium_scan",
-            ))
+                elements.append(NarrativeText(text=ocr_text or text, metadata=meta(detection_class_prob=confidence), detection_origin="rapidocr"))
+            elements.append(Image(text="", metadata=meta(image_base64=_image_payload(image), image_mime_type="image/jpeg"), detection_origin="pdfium_scan"))
             return elements
         finally:
             image.close()
 
-    # Detect native ruled tables and exclude their text from the narrative to avoid duplication.
+    # Extract ruled tables separately so table text is not duplicated in narrative chunks.
     tables = page.find_tables()
-    narrative_page = page
     if tables:
         boxes = [table.bbox for table in tables]
-
-        def outside_tables(obj):
-            x = (obj.get("x0", 0) + obj.get("x1", 0)) / 2
-            y = (obj.get("top", 0) + obj.get("bottom", 0)) / 2
-            return not any(left <= x <= right and top <= y <= bottom for left, top, right, bottom in boxes)
-
-        narrative_page = page.filter(outside_tables)
+        narrative_page = page.filter(lambda obj: not any(
+            l <= (obj.get("x0", 0) + obj.get("x1", 0)) / 2 <= r and t <= (obj.get("top", 0) + obj.get("bottom", 0)) / 2 <= b
+            for l, t, r, b in boxes
+        ))
         text = (narrative_page.extract_text(layout=False) or "").strip()
+
     elements = []
     if text:
-        elements.append(NarrativeText(text=text, metadata=metadata(), detection_origin="pdfplumber"))
+        elements.append(NarrativeText(text=text, metadata=meta(), detection_origin="pdfplumber"))
     for table in tables:
         rows = table.extract()
         if rows and any(any(cell for cell in row) for row in rows):
             elements.append(Table(
                 text="\n".join("\t".join(str(cell or "") for cell in row) for row in rows),
-                metadata=metadata(text_as_html=_table_html(rows)),
+                metadata=meta(text_as_html=_table_html(rows)),
                 detection_origin="pdfplumber",
             ))
-    # A page preview also preserves vector charts that do not appear as embedded images.
-    has_vector_graphics = len(page.curves) >= 3 or (not tables and len(page.lines) >= 8)
-    if page.images or has_vector_graphics:
+    if page.images or len(page.curves) >= 3 or (not tables and len(page.lines) >= 8):
         image = _render_page(pdf, index, settings)
         try:
-            elements.append(Image(
-                text="",
-                metadata=metadata(image_base64=_image_payload(image), image_mime_type="image/jpeg"),
-                detection_origin="pdfium_visual",
-            ))
+            elements.append(Image(text="", metadata=meta(image_base64=_image_payload(image), image_mime_type="image/jpeg"), detection_origin="pdfium_visual"))
         finally:
             image.close()
     return elements
@@ -211,7 +184,7 @@ def _page_elements(page, pdf, index: int, filename: str, settings: ExtractionSet
 
 def extract_document(file_path, *, settings: ExtractionSettings | None = None,
                      progress_callback=None, cancellation_event=None):
-    """Return existing Unstructured-compatible elements with page/source provenance."""
+    """Extract text, tables, and visual elements from a PDF without external binaries."""
     settings = settings or ExtractionSettings.from_env()
     path = Path(file_path)
     if not path.is_file():
@@ -221,26 +194,16 @@ def extract_document(file_path, *, settings: ExtractionSettings | None = None,
     with path.open("rb") as stream:
         if b"%PDF-" not in stream.read(1024):
             raise ExtractionError("File does not contain a PDF header.")
-    try:
-        import pdfplumber
-        import pypdfium2
-    except ImportError as exc:
-        raise ExtractionError("Install extraction dependencies: python -m pip install -r requirements-ocr.txt") from exc
+
+    import pdfplumber
+    import pypdfium2
 
     try:
         with pdfplumber.open(path) as document:
             if len(document.pages) > settings.max_pages:
                 raise ExtractionError(f"PDF exceeds the {settings.max_pages} page limit.")
-            if settings.mode == "hi_res":
-                if progress_callback:
-                    progress_callback(0, 1, "Running high-resolution layout extraction")
-                if cancellation_event and cancellation_event.is_set():
-                    raise ExtractionError("Document extraction cancelled.")
-                return _extract_high_resolution(path, settings)
-            # PDFium is not thread-safe; prevent concurrent native rendering in Streamlit.
             with _pdfium_lock, pypdfium2.PdfDocument(str(path)) as pdf:
-                elements = []
-                total = len(document.pages)
+                elements, total = [], len(document.pages)
                 for index, page in enumerate(document.pages):
                     try:
                         if cancellation_event and cancellation_event.is_set():
@@ -265,23 +228,90 @@ def extract_document(file_path, *, settings: ExtractionSettings | None = None,
         raise ExtractionError(f"Could not open PDF; it may be corrupt or password-protected: {exc}") from exc
 
 
-def _extract_high_resolution(path: Path, settings: ExtractionSettings):
-    """Explicit legacy layout mode, retaining its separately documented dependencies."""
-    if settings.ocr_backend != "tesseract":
-        raise ExtractionError(
-            "Unstructured hi_res requires its supported OCR adapter. Set OCR_BACKEND=tesseract "
-            "and install requirements-hires.txt, or use PDF_EXTRACTION_MODE=auto for RapidOCR."
-        )
-    configure_tesseract()
-    if not shutil.which("pdftoppm"):
-        raise ExtractionError("Optional hi_res mode requires Poppler (pdftoppm) on PATH.")
-    try:
-        from unstructured.partition.pdf import partition_pdf
+class BatchStageJob:
+    def __init__(self, job, index, count, name, *, stages=1):
+        self.parent = job
+        self.key = hashlib.sha256(f"{job.key}:{index}".encode()).hexdigest()[:32]
+        self.index, self.count, self.name = index, count, name
+        self.stage, self.stages = 0, stages
+        self.cancellation_event = job.cancellation_event
 
-        return partition_pdf(
-            filename=str(path), strategy="hi_res", languages=["eng"],
-            infer_table_structure=True, extract_image_block_types=["Image"],
-            extract_image_block_to_payload=True,
+    def set_stage(self, stage):
+        self.stage = stage
+
+    def progress(self, done, total, message):
+        fraction = (self.stage + min(1, max(0, done / max(total, 1)))) / self.stages
+        self.parent.progress(
+            self.index * 100 + round(fraction * 100),
+            self.count * 100,
+            f"PDF {self.index + 1}/{self.count}: {self.name} — {message}",
         )
-    except Exception as exc:
-        raise ExtractionError(f"Optional high-resolution extraction failed: {exc}") from exc
+
+    def check_cancelled(self):
+        self.parent.check_cancelled()
+
+    def token(self, text):
+        self.parent.token(text)
+
+
+def merge_pdfs(documents, root, *, max_pages_per_file=300):
+    import pypdfium2 as pdfium
+
+    root = Path(root)
+    directory = root / "docs"
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    sources = []
+    try:
+        with pdfium.PdfDocument.new() as combined:
+            offset = 0
+            for document in documents:
+                try:
+                    with pdfium.PdfDocument(root / document["file_path"]) as pdf:
+                        count = len(pdf)
+                        if not 1 <= count <= max_pages_per_file:
+                            raise ValueError(f"{document['name']} must contain 1–{max_pages_per_file} pages.")
+                        combined.import_pages(pdf)
+                except pdfium.PdfiumError as exc:
+                    raise ValueError(f"{document['name']} could not be opened as a PDF.") from exc
+                sources.append({
+                    "document_id": document["id"], "name": document["name"],
+                    "sha256": document["sha256"], "page_start": offset + 1, "page_count": count,
+                })
+                offset += count
+            with tempfile.NamedTemporaryFile(dir=directory, suffix=".merge", delete=False) as stream:
+                temporary = Path(stream.name)
+            combined.save(temporary)
+        sha = hashlib.sha256(temporary.read_bytes()).hexdigest()
+        path = directory / (sha + ".pdf")
+        if not path.exists():
+            temporary.replace(path)
+        return {
+            "sha256": sha, "file_path": str(path.relative_to(root)),
+            "size_bytes": path.stat().st_size, "source_documents": sources,
+        }
+    finally:
+        if temporary and temporary.exists():
+            temporary.unlink()
+
+
+def original_pages(pages, sources):
+    result = []
+    for source in sources:
+        matching = sorted(page for page in pages if source["page_start"] <= page < source["page_start"] + source["page_count"])
+        if matching:
+            result.append({
+                "document_id": source["document_id"], "name": source["name"],
+                "pages": [page - source["page_start"] + 1 for page in matching],
+                "combined_pages": matching,
+            })
+    return result
+
+
+def annotate_chunks(documents, sources):
+    from backend.evaluation_data import document_pages
+
+    for document in documents:
+        document.metadata["source_pages"] = json.dumps(original_pages(document_pages(document), sources), sort_keys=True)
+        document.metadata["source"] = "Combined PDF"
+    return documents

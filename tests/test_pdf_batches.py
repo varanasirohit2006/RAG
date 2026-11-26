@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.api.main as routes
-from backend.pdf_batches import merge_pdfs, original_pages
+from backend.document_extraction import merge_pdfs, original_pages
 from test_api import Database, HEADERS, await_job, env
 from test_document_extraction import write_native_pdf
 from test_vector_ingestion import LocalTestEmbeddings

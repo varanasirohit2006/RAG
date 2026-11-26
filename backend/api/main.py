@@ -23,7 +23,7 @@ from backend.api.auth import Authentication, AuthSettings, PUBLIC_API_PATHS
 from backend.document_extraction import ExtractionSettings
 from backend.evaluation_data import EvaluationDataError, dataset_template, load_evaluation_dataset
 from backend.processing_jobs import answer_question, evaluate_document, extraction_cache_key, prepare_document
-from backend.pdf_batches import MAX_BATCH_PDFS, BatchStageJob, merge_pdfs
+from backend.document_extraction import MAX_BATCH_PDFS, BatchStageJob, merge_pdfs
 from backend.files import PROJECT_ROOT
 
 
@@ -97,7 +97,7 @@ def create_app(root=None, *, warm=True, auth_transport=None):
     @asynccontextmanager
     async def lifespan(app):
         if warm:
-            from backend.bootstrap import warm_runtime
+            from backend.rag_pipeline import warm_runtime
             warm_runtime()
         try:
             yield
@@ -151,7 +151,7 @@ def create_app(root=None, *, warm=True, auth_transport=None):
         return {k: v for k, v in doc.items() if k not in ('file_path', 'index_path')}
 
     def database(doc):
-        from backend.index_runtime import index_is_ready
+        from backend.rag_pipeline import index_is_ready
         if not doc.get('index_path') or not index_is_ready(root / doc['index_path'], document_hash=doc['sha256']):
             raise HTTPException(409, 'Prepare this document before searching or evaluating it.')
         path = str(root / doc['index_path'])
@@ -254,7 +254,7 @@ def create_app(root=None, *, warm=True, auth_transport=None):
     def bootstrap(request: Request):
         owner = request.state.owner
         if auth_settings.mode == 'local' and catalog.claim_legacy(owner):
-            from backend.index_runtime import index_is_ready, read_index_manifest
+            from backend.rag_pipeline import index_is_ready, read_index_manifest
             for path in sorted((root / 'docs').glob('*.pdf')):
                 sha = path.stem
                 if not re.fullmatch(r'[a-f0-9]{64}', sha):

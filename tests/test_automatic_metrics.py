@@ -178,7 +178,7 @@ def test_false_answer_rate_is_derived_only_for_unanswerable_cases(runtime):
 def test_judge_token_usage_is_measured_when_provider_supplies_it():
     from pydantic import BaseModel
     from types import SimpleNamespace
-    from backend.evaluation_judge import JudgeSettings, create_google_json_llm
+    from backend.evaluation_judge import JudgeSettings, create_json_judge_llm
 
     class Verdict(BaseModel):
         faithful: bool
@@ -188,7 +188,7 @@ def test_judge_token_usage_is_measured_when_provider_supplies_it():
             return SimpleNamespace(content='{"faithful":true}', response_metadata={"finish_reason": "STOP"},
                                    usage_metadata={"input_tokens": 12, "output_tokens": 6, "total_tokens": 18})
 
-    judge = create_google_json_llm(JudgeSettings(), model=Model())
+    judge = create_json_judge_llm(JudgeSettings(), model=Model())
     asyncio.run(judge.agenerate("Check evidence", Verdict))
     assert judge.usage["token_usage_requests"] == 1
     assert judge.usage["total_tokens"] == 18

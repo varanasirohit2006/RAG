@@ -31,9 +31,8 @@ class Database:
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    from backend import index_runtime
     from backend import rag_pipeline
-    monkeypatch.setattr(index_runtime, 'index_is_ready', lambda *args, **kwargs: True)
+    monkeypatch.setattr(rag_pipeline, 'index_is_ready', lambda *args, **kwargs: True)
     monkeypatch.setattr(rag_pipeline, 'load_vector_store', lambda path: Database())
     app = routes.create_app(tmp_path, warm=False)
     with TestClient(app) as client:

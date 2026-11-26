@@ -1,8 +1,0 @@
-# CPU extraction and OCR on Windows/Linux without external executables.
-rapidocr==3.10.0
-onnxruntime>=1.20,<2
-pdfplumber>=0.11.7,<0.12
-pypdfium2>=5,<6
-unstructured>=0.18,<0.23
-Pillow>=11,<14
-python-dotenv>=1,<2

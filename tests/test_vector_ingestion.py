@@ -1,7 +1,7 @@
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-from backend import rag_pipeline, index_runtime
+from backend import rag_pipeline, rag_pipeline as index_runtime
 
 
 class LocalTestEmbeddings(Embeddings):

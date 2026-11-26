@@ -355,7 +355,7 @@ def test_cancellation_stops_queued_generation_and_judging(runtime, monkeypatch):
 
 def test_gemma_adapter_repairs_json_without_tools_or_multiple_candidates():
     from pydantic import BaseModel
-    from backend.evaluation_judge import JudgeSettings, create_google_json_llm
+    from backend.evaluation_judge import JudgeSettings, create_json_judge_llm
     from ragas.llms.base import InstructorBaseRagasLLM
 
     class Verdict(BaseModel):
@@ -369,7 +369,7 @@ def test_gemma_adapter_repairs_json_without_tools_or_multiple_candidates():
             text = 'not JSON' if len(self.calls) == 1 else '```json\n{"faithful":true,"reason":"Source supports it."}\n```'
             return SimpleNamespace(content=[{"text": text}], response_metadata={"finish_reason": "STOP"})
     model = Model()
-    adapter = create_google_json_llm(JudgeSettings(model="gemma-4-31b-it"), model=model)
+    adapter = create_json_judge_llm(JudgeSettings(model="gemma-4-31b-it"), model=model)
     assert isinstance(adapter, InstructorBaseRagasLLM)
     result = asyncio.run(adapter.agenerate("Judge the statement.", Verdict))
     assert result.faithful is True
@@ -380,14 +380,14 @@ def test_gemma_adapter_repairs_json_without_tools_or_multiple_candidates():
 
 def test_gemma_adapter_does_not_score_truncated_verdicts():
     from pydantic import BaseModel
-    from backend.evaluation_judge import JudgeSettings, create_google_json_llm
+    from backend.evaluation_judge import JudgeSettings, create_json_judge_llm
 
     class Verdict(BaseModel):
         faithful: bool
     class Model:
         async def ainvoke(self, messages):
             return SimpleNamespace(content='{"faithful":true}', response_metadata={"finish_reason": "MAX_TOKENS"})
-    adapter = create_google_json_llm(JudgeSettings(), model=Model())
+    adapter = create_json_judge_llm(JudgeSettings(), model=Model())
     with pytest.raises(ValueError, match="truncated"):
         asyncio.run(adapter.agenerate("Judge the statement.", Verdict))
     assert adapter.usage["structured_generation_requests"] == 2
